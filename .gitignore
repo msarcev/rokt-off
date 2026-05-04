@@ -1,0 +1,7 @@
+/target
+/web/*.wasm
+**/*.rs.bk
+Cargo.lock.bak
+.DS_Store
+CLAUDE.md
+PLAN.md
