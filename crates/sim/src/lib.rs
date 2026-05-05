@@ -379,15 +379,13 @@ impl World {
             }
         }
 
-        // Respawn timer: arm on the death tick, count down on subsequent
-        // ticks, and reset the ship to a fresh state once it hits zero.
         for (idx, ship) in self.ships.iter_mut().enumerate() {
             if ship.alive {
                 continue;
             }
-            if was_alive[idx] {
+            if ship.respawn_ticks == 0 {
                 ship.respawn_ticks = RESPAWN_TICKS;
-            } else if ship.respawn_ticks > 0 {
+            } else {
                 ship.respawn_ticks -= 1;
                 if ship.respawn_ticks == 0 {
                     *ship = Ship::new(
@@ -1452,6 +1450,20 @@ mod tests {
                 .unwrap_or(0.0);
             assert!(depth < 1e-3, "ship triangles overlap by {depth}");
         }
+    }
+
+    #[test]
+    fn dead_ship_with_zero_timer_eventually_respawns() {
+        let mut world = World::new(Level::default());
+        world.ships[0].alive = false;
+        world.ships[0].respawn_ticks = 0;
+        for _ in 0..(RESPAWN_TICKS + 5) {
+            world.tick([Input::empty(), Input::empty()]);
+            if world.ships[0].alive {
+                return;
+            }
+        }
+        panic!("ship with stuck dead state never respawned");
     }
 
     #[test]
