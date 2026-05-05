@@ -1,5 +1,5 @@
 use macroquad::prelude::*;
-use sim::{Input, Level, RectKind, World, FUEL_MAX, SHIELD_MAX};
+use sim::{Input, Level, ParticleKind, RectKind, World, FUEL_MAX, SHIELD_MAX};
 
 const SHIP_SIZE: f32 = 14.0;
 const SHIP_COLORS: [Color; 2] = [SKYBLUE, ORANGE];
@@ -114,8 +114,11 @@ fn draw_bullets(world: &World) {
 fn draw_particles(world: &World) {
     for p in &world.particles {
         let frac = (p.ttl / p.max_ttl).clamp(0.0, 1.0);
-        let color = Color::new(1.0, 0.7, 0.3, frac);
-        draw_circle(p.pos.x, p.pos.y, 2.0, color);
+        let (color, radius) = match p.kind {
+            ParticleKind::Thrust => (Color::new(0.5, 0.85, 1.0, frac), 1.6),
+            ParticleKind::Explosion => (Color::new(1.0, 0.7, 0.3, frac), 2.0),
+        };
+        draw_circle(p.pos.x, p.pos.y, radius, color);
     }
 }
 

@@ -70,6 +70,19 @@ pub const PARTICLE_SPEED_MAX: f32 = 240.0;
 pub const PARTICLE_TTL_MIN: f32 = 0.4;
 pub const PARTICLE_TTL_MAX: f32 = 1.2;
 
+pub const THRUST_PARTICLES_PER_TICK: u32 = 2;
+pub const THRUST_PARTICLE_SPEED_MIN: f32 = 140.0;
+pub const THRUST_PARTICLE_SPEED_MAX: f32 = 220.0;
+pub const THRUST_PARTICLE_TTL_MIN: f32 = 0.18;
+pub const THRUST_PARTICLE_TTL_MAX: f32 = 0.40;
+pub const THRUST_PARTICLE_SPREAD: f32 = 0.35;
+pub const THRUST_EMIT_OFFSET: f32 = 0.85;
+
+pub const PARTICLE_RADIUS: f32 = 2.5;
+pub const PARTICLE_HIT_DAMAGE_THRUST: f32 = 0.25;
+pub const PARTICLE_HIT_DAMAGE_EXPLOSION: f32 = 1.0;
+pub const PARTICLE_HIT_IMPULSE_SCALE: f32 = 0.015;
+
 pub const DEFAULT_SEED: u64 = 0xDEAD_BEEF_C0DE_F00D;
 
 bitflags! {
@@ -218,12 +231,20 @@ pub struct Bullet {
     pub owner: u8,
 }
 
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum ParticleKind {
+    Thrust,
+    Explosion,
+}
+
 #[derive(Copy, Clone, Debug)]
 pub struct Particle {
     pub pos: Vec2,
     pub vel: Vec2,
     pub ttl: f32,
     pub max_ttl: f32,
+    pub owner: u8,
+    pub kind: ParticleKind,
 }
 
 #[derive(Clone, Debug)]
@@ -260,6 +281,7 @@ impl World {
     pub fn tick(&mut self, inputs: [Input; 2]) {
         let gravity = Vec2::new(0.0, self.level.gravity);
         let was_alive = [self.ships[0].alive, self.ships[1].alive];
+        let mut thrusted = [false; 2];
         for (idx, (ship, input)) in self.ships.iter_mut().zip(inputs.iter()).enumerate() {
             ship.fire_cooldown = (ship.fire_cooldown - DT).max(0.0);
             if !ship.alive {
@@ -267,7 +289,7 @@ impl World {
             }
             let was_landed = ship.landed;
             ship.landed = false;
-            step_ship(ship, *input, gravity, was_landed);
+            thrusted[idx] = step_ship(ship, *input, gravity, was_landed);
             resolve_ship_rects(ship, &self.level.rects);
 
             // Stay-landed sticky: pivot rotation can briefly lift the
@@ -321,6 +343,18 @@ impl World {
             }
         }
 
+        // Emit thrust particles for ships that fired their main engine.
+        for idx in 0..self.ships.len() {
+            if thrusted[idx] {
+                spawn_thrust(
+                    &mut self.particles,
+                    &mut self.rng,
+                    &self.ships[idx],
+                    idx as u8,
+                );
+            }
+        }
+
         // Advance bullets, drop expired or impacted.
         for b in self.bullets.iter_mut() {
             b.pos += b.vel * DT;
@@ -332,7 +366,13 @@ impl World {
         // Newly-dead ships explode.
         for (idx, ship) in self.ships.iter().enumerate() {
             if was_alive[idx] && !ship.alive {
-                spawn_explosion(&mut self.particles, &mut self.rng, ship.pos, ship.vel);
+                spawn_explosion(
+                    &mut self.particles,
+                    &mut self.rng,
+                    ship.pos,
+                    ship.vel,
+                    idx as u8,
+                );
             }
         }
 
@@ -361,13 +401,20 @@ impl World {
             p.vel += gravity * DT;
             p.ttl -= DT;
         }
+        resolve_particles(&mut self.particles, &mut self.ships);
         self.particles.retain(|p| p.ttl > 0.0);
 
         self.tick += 1;
     }
 }
 
-fn spawn_explosion(particles: &mut Vec<Particle>, rng: &mut Rng, pos: Vec2, base_vel: Vec2) {
+fn spawn_explosion(
+    particles: &mut Vec<Particle>,
+    rng: &mut Rng,
+    pos: Vec2,
+    base_vel: Vec2,
+    owner: u8,
+) {
     use std::f32::consts::TAU;
     for _ in 0..EXPLOSION_PARTICLE_COUNT {
         let angle = rng.next_f32() * TAU;
@@ -379,11 +426,65 @@ fn spawn_explosion(particles: &mut Vec<Particle>, rng: &mut Rng, pos: Vec2, base
             vel: base_vel + dir * speed,
             ttl,
             max_ttl: ttl,
+            owner,
+            kind: ParticleKind::Explosion,
         };
         if particles.len() >= MAX_PARTICLES {
             particles.remove(0);
         }
         particles.push(p);
+    }
+}
+
+fn spawn_thrust(particles: &mut Vec<Particle>, rng: &mut Rng, ship: &Ship, owner: u8) {
+    let forward = ship.forward();
+    let perp = Vec2::new(-forward.y, forward.x);
+    let base = ship.pos - forward * (SHIP_SIZE * THRUST_EMIT_OFFSET);
+    for _ in 0..THRUST_PARTICLES_PER_TICK {
+        let speed = rng.range(THRUST_PARTICLE_SPEED_MIN, THRUST_PARTICLE_SPEED_MAX);
+        let spread = rng.range(-THRUST_PARTICLE_SPREAD, THRUST_PARTICLE_SPREAD);
+        let ttl = rng.range(THRUST_PARTICLE_TTL_MIN, THRUST_PARTICLE_TTL_MAX);
+        let dir = (-forward + perp * spread).normalize_or_zero();
+        let p = Particle {
+            pos: base,
+            vel: ship.vel + dir * speed,
+            ttl,
+            max_ttl: ttl,
+            owner,
+            kind: ParticleKind::Thrust,
+        };
+        if particles.len() >= MAX_PARTICLES {
+            particles.remove(0);
+        }
+        particles.push(p);
+    }
+}
+
+fn resolve_particles(particles: &mut [Particle], ships: &mut [Ship; 2]) {
+    let r = SHIP_RADIUS + PARTICLE_RADIUS;
+    let r_sq = r * r;
+    for p in particles.iter_mut() {
+        if p.ttl <= 0.0 {
+            continue;
+        }
+        for (idx, ship) in ships.iter_mut().enumerate() {
+            if !ship.alive || idx as u8 == p.owner {
+                continue;
+            }
+            if (p.pos - ship.pos).length_squared() <= r_sq {
+                let damage = match p.kind {
+                    ParticleKind::Thrust => PARTICLE_HIT_DAMAGE_THRUST,
+                    ParticleKind::Explosion => PARTICLE_HIT_DAMAGE_EXPLOSION,
+                };
+                ship.shields = (ship.shields - damage).max(0.0);
+                if ship.shields <= 0.0 {
+                    ship.alive = false;
+                }
+                ship.vel += (p.vel - ship.vel) * PARTICLE_HIT_IMPULSE_SCALE;
+                p.ttl = 0.0;
+                break;
+            }
+        }
     }
 }
 
@@ -639,7 +740,7 @@ fn angle_diff(a: f32, b: f32) -> f32 {
     d
 }
 
-fn step_ship(ship: &mut Ship, input: Input, gravity: Vec2, was_landed: bool) {
+fn step_ship(ship: &mut Ship, input: Input, gravity: Vec2, was_landed: bool) -> bool {
     // Rotation input only honoured in flight or while tipped (recovery).
     // Landed-in-basin is locked — pad-contact code drives the angle.
     let rotation_locked = was_landed && !ship.tipped_over;
@@ -657,13 +758,16 @@ fn step_ship(ship: &mut Ship, input: Input, gravity: Vec2, was_landed: bool) {
 
     // Tipped ships can rotate (A/D recovery) but can't thrust.
     let mut accel = gravity;
+    let mut thrusted = false;
     if !ship.tipped_over && input.contains(Input::THRUST) && ship.fuel > 0.0 {
         accel += ship.forward() * SHIP_THRUST;
         ship.fuel = (ship.fuel - FUEL_BURN_PER_SEC * DT).max(0.0);
+        thrusted = true;
     }
     ship.vel += accel * DT;
     ship.vel *= SHIP_LINEAR_DAMPING;
     ship.pos += ship.vel * DT;
+    thrusted
 }
 
 #[cfg(test)]
@@ -1073,6 +1177,107 @@ mod tests {
             assert_eq!(pa.pos, pb.pos);
             assert_eq!(pa.vel, pb.vel);
             assert_eq!(pa.ttl, pb.ttl);
+        }
+    }
+
+    #[test]
+    fn thrust_input_emits_owned_thrust_particles() {
+        let mut world = World::new(Level::default());
+        world.ships[0].pos = Vec2::new(400.0, 360.0);
+        world.ships[0].angle = 0.0;
+        world.tick([Input::THRUST, Input::empty()]);
+        let thrusts: Vec<_> = world
+            .particles
+            .iter()
+            .filter(|p| p.kind == ParticleKind::Thrust)
+            .collect();
+        assert_eq!(thrusts.len(), THRUST_PARTICLES_PER_TICK as usize);
+        for p in &thrusts {
+            assert_eq!(p.owner, 0);
+        }
+    }
+
+    #[test]
+    fn thrust_particles_do_not_damage_their_owner() {
+        let mut world = world_with_ship(Vec2::new(400.0, 360.0), Vec2::ZERO, 0.0);
+        for _ in 0..60 {
+            world.tick([Input::THRUST, Input::empty()]);
+        }
+        assert_eq!(world.ships[0].shields, SHIELD_MAX);
+    }
+
+    #[test]
+    fn thrust_particles_damage_other_ship() {
+        let mut world = World::new(Level::default());
+        // P1 facing right, exhaust shoots left straight at P2.
+        world.ships[0].pos = Vec2::new(400.0, 360.0);
+        world.ships[0].angle = 0.0;
+        world.ships[1].pos = Vec2::new(370.0, 360.0);
+        world.ships[1].vel = Vec2::ZERO;
+        world.ships[1].angle = UPRIGHT_ANGLE;
+        let init = world.ships[1].shields;
+        for _ in 0..30 {
+            world.tick([Input::THRUST, Input::empty()]);
+        }
+        assert!(
+            world.ships[1].shields < init,
+            "P2 should take particle damage, got {}",
+            world.ships[1].shields
+        );
+        assert!(
+            world.ships[1].vel.x < 0.0,
+            "P2 should be pushed left by exhaust, got vel.x={}",
+            world.ships[1].vel.x
+        );
+    }
+
+    #[test]
+    fn explosion_particles_damage_other_ship() {
+        // Kill P1 gently: graze the floor with shields almost depleted so
+        // the explosion's base velocity stays low and shrapnel actually
+        // sprays outward instead of getting yanked along by the slam.
+        let mut world = World::new(Level::default());
+        world.ships[0].pos = Vec2::new(300.0, 690.0);
+        world.ships[0].vel = Vec2::new(0.0, 100.0);
+        world.ships[0].angle = 0.0;
+        world.ships[0].shields = 0.5;
+        world.ships[1].pos = Vec2::new(320.0, 670.0);
+        world.ships[1].vel = Vec2::ZERO;
+        world.ships[1].angle = UPRIGHT_ANGLE;
+        world.tick([Input::empty(), Input::empty()]);
+        assert!(!world.ships[0].alive, "P1 should die from floor contact");
+        let init = world.ships[1].shields;
+        for _ in 0..30 {
+            world.tick([Input::empty(), Input::empty()]);
+        }
+        assert!(
+            world.ships[1].shields < init,
+            "P2 should take shrapnel damage, got {}",
+            world.ships[1].shields
+        );
+    }
+
+    #[test]
+    fn thrust_particles_are_deterministic() {
+        let mk = || {
+            let mut w = world_with_ship(Vec2::new(400.0, 360.0), Vec2::ZERO, 0.0);
+            w.ships[1].pos = Vec2::new(-9999.0, -9999.0);
+            w.ships[1].alive = false;
+            w
+        };
+        let mut a = mk();
+        let mut b = mk();
+        for _ in 0..60 {
+            a.tick([Input::THRUST, Input::empty()]);
+            b.tick([Input::THRUST, Input::empty()]);
+        }
+        assert_eq!(a.particles.len(), b.particles.len());
+        for (pa, pb) in a.particles.iter().zip(b.particles.iter()) {
+            assert_eq!(pa.pos, pb.pos);
+            assert_eq!(pa.vel, pb.vel);
+            assert_eq!(pa.ttl, pb.ttl);
+            assert_eq!(pa.owner, pb.owner);
+            assert_eq!(pa.kind, pb.kind);
         }
     }
 
