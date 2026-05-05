@@ -13,7 +13,10 @@ use sim::{Input, Level, ParticleKind, RectKind, World, DEFAULT_SEED, FUEL_MAX, S
 
 use session::{LocalSession, P2pRunner, Session, SyncTestRunner};
 
-const SIGNALING_URL: &str = "ws://localhost:3536/head-on-dev?next=2";
+const SIGNALING_URL: &str = match option_env!("HEADON_SIGNALING_URL") {
+    Some(s) => s,
+    None => "ws://localhost:3536/head-on-dev?next=2",
+};
 
 const SHIP_SIZE: f32 = 14.0;
 const SHIP_COLORS: [Color; 2] = [SKYBLUE, ORANGE];
