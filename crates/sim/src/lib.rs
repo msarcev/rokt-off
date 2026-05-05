@@ -23,10 +23,11 @@ pub const SHIELD_MAX: f32 = 100.0;
 pub const IMPACT_DAMAGE_SCALE: f32 = 0.25;
 pub const SCRAPE_THRESHOLD: f32 = 50.0;
 pub const COLLISION_BOUNCE: f32 = 0.3;
-pub const REFUEL_RATE_PER_SEC: f32 = 200.0;
+pub const REFUEL_RATE_PER_SEC: f32 = 60.0;
 
 pub const UPRIGHT_ANGLE: f32 = -std::f32::consts::FRAC_PI_2;
 pub const SETTLED_ANGLE_TOL: f32 = 0.18;
+pub const SETTLED_DELAY_TICKS: u32 = 45;
 pub const LIFTOFF_VELOCITY: f32 = 30.0;
 pub const BOUNCE_RESTITUTION: f32 = 0.4;
 pub const BOUNCE_FLOOR: f32 = 10.0;
@@ -56,6 +57,8 @@ pub const BULLET_TTL: f32 = 1.5;
 pub const FIRE_COOLDOWN: f32 = 0.18;
 pub const MAX_BULLETS: usize = 64;
 pub const BULLET_DAMAGE: f32 = 20.0;
+
+pub const RESPAWN_TICKS: u32 = 60;
 
 pub const MAX_PARTICLES: usize = 512;
 pub const EXPLOSION_PARTICLE_COUNT: usize = 200;
@@ -90,6 +93,8 @@ pub struct Ship {
     pub tipped_over: bool,
     pub tipped_ticks: u32,
     pub fire_cooldown: f32,
+    pub respawn_ticks: u32,
+    pub settled_ticks: u32,
 }
 
 impl Ship {
@@ -106,6 +111,8 @@ impl Ship {
             tipped_over: false,
             tipped_ticks: 0,
             fire_cooldown: 0.0,
+            respawn_ticks: 0,
+            settled_ticks: 0,
         }
     }
 
@@ -271,6 +278,7 @@ impl World {
             }
 
             if ship.tipped_over {
+                ship.settled_ticks = 0;
                 let tilt = angle_diff(ship.angle, UPRIGHT_ANGLE);
                 if tilt.abs() < TIP_OVER_ANGLE {
                     // Player rotated back into the basin: clear and reset.
@@ -285,13 +293,19 @@ impl World {
                     }
                 }
             } else if ship.landed {
-                // Refuel/recharge only once perfectly upright.
                 let tilt = angle_diff(ship.angle, UPRIGHT_ANGLE);
                 if tilt.abs() < SETTLED_ANGLE_TOL {
-                    ship.fuel = (ship.fuel + REFUEL_RATE_PER_SEC * DT).min(FUEL_MAX);
-                    ship.shields =
-                        (ship.shields + REFUEL_RATE_PER_SEC * DT).min(SHIELD_MAX);
+                    ship.settled_ticks = ship.settled_ticks.saturating_add(1);
+                    if ship.settled_ticks > SETTLED_DELAY_TICKS {
+                        ship.fuel = (ship.fuel + REFUEL_RATE_PER_SEC * DT).min(FUEL_MAX);
+                        ship.shields =
+                            (ship.shields + REFUEL_RATE_PER_SEC * DT).min(SHIELD_MAX);
+                    }
+                } else {
+                    ship.settled_ticks = 0;
                 }
+            } else {
+                ship.settled_ticks = 0;
             }
 
             // Hold-fire = autofire. Tipped ships can't fire.
@@ -316,6 +330,25 @@ impl World {
         for (idx, ship) in self.ships.iter().enumerate() {
             if was_alive[idx] && !ship.alive {
                 spawn_explosion(&mut self.particles, &mut self.rng, ship.pos, ship.vel);
+            }
+        }
+
+        // Respawn timer: arm on the death tick, count down on subsequent
+        // ticks, and reset the ship to a fresh state once it hits zero.
+        for (idx, ship) in self.ships.iter_mut().enumerate() {
+            if ship.alive {
+                continue;
+            }
+            if was_alive[idx] {
+                ship.respawn_ticks = RESPAWN_TICKS;
+            } else if ship.respawn_ticks > 0 {
+                ship.respawn_ticks -= 1;
+                if ship.respawn_ticks == 0 {
+                    *ship = Ship::new(
+                        self.level.spawn_points[idx],
+                        -std::f32::consts::FRAC_PI_2,
+                    );
+                }
             }
         }
 
