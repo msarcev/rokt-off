@@ -13,8 +13,9 @@ pub const SHIP_SIZE: f32 = 14.0;
 pub const SHIP_RADIUS: f32 = SHIP_SIZE * 0.7;
 
 pub const SHIP_THRUST: f32 = 380.0;
-pub const SHIP_ROT_SPEED: f32 = 12.5;
+pub const SHIP_ROT_SPEED: f32 = 32.5;
 pub const SHIP_ANGULAR_DAMPING: f32 = 0.90;
+pub const SHIP_LINEAR_DAMPING: f32 = 0.99;
 pub const DEFAULT_GRAVITY: f32 = 90.0;
 pub const FUEL_MAX: f32 = 1000.0;
 pub const FUEL_BURN_PER_SEC: f32 = 80.0;
@@ -661,6 +662,7 @@ fn step_ship(ship: &mut Ship, input: Input, gravity: Vec2, was_landed: bool) {
         ship.fuel = (ship.fuel - FUEL_BURN_PER_SEC * DT).max(0.0);
     }
     ship.vel += accel * DT;
+    ship.vel *= SHIP_LINEAR_DAMPING;
     ship.pos += ship.vel * DT;
 }
 
