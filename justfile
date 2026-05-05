@@ -21,9 +21,16 @@ watch:
     cargo watch -x "run -p client --release -- --replay"
 
 build-wasm:
+    @command -v wasm-bindgen >/dev/null 2>&1 || cargo install --locked wasm-bindgen-cli@0.2.120
     cargo build -p client --release --target wasm32-unknown-unknown
-    @cp target/wasm32-unknown-unknown/release/head-on-client.wasm web/head-on-client.wasm
-    @echo 'wasm copied to web/head-on-client.wasm — run "just serve-wasm" to play'
+    rm -rf web/pkg
+    wasm-bindgen --target no-modules --no-typescript --out-dir web/pkg \
+        target/wasm32-unknown-unknown/release/head_on_client.wasm
+    # Expose wasm-bindgen's instance to gl.js globals so miniquad's import
+    # bridges can read Rust memory. Patch right after `wasm = instance.exports`.
+    sed -i.bak 's/wasm = instance.exports;/wasm = instance.exports; globalThis.wasm_memory = wasm.memory; globalThis.wasm_exports = wasm;/' web/pkg/head_on_client.js
+    rm -f web/pkg/head_on_client.js.bak
+    @echo 'wasm in web/pkg/head_on_client_bg.wasm — run "just serve-wasm" to play'
 
 serve-wasm: build-wasm
     @echo "serving on http://localhost:8080"

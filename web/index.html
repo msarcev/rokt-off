@@ -17,7 +17,23 @@
 </head>
 <body>
 <canvas id="glcanvas" tabindex='1'></canvas>
-<script src="https://not-fl3.github.io/miniquad-samples/mq_js_bundle.js"></script>
-<script>load("head-on-client.wasm");</script>
+<script src="./gl.js"></script>
+<script>
+    // wasm-bindgen-cli emits CommonJS-style `require("env")` calls when the
+    // wasm has imports under `module = "env"` (miniquad's GL bridges, of
+    // which there are 107). Shim require() so those calls resolve to
+    // miniquad's already-built importObject.env.
+    window.require = function (name) {
+        if (name === 'env') return importObject.env;
+        throw new Error('require(' + name + ') is not supported');
+    };
+</script>
+<script src="./pkg/head_on_client.js"></script>
+<script>
+    register_plugins(plugins);
+    wasm_bindgen('./pkg/head_on_client_bg.wasm')
+        .then(() => init_plugins(plugins))
+        .catch(err => console.error('[head-on] init failed:', err));
+</script>
 </body>
 </html>
