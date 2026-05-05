@@ -34,6 +34,12 @@ pub fn window_conf() -> Conf {
     }
 }
 
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen::prelude::wasm_bindgen(start)]
+pub fn wasm_start() {
+    macroquad::Window::from_config(window_conf(), run());
+}
+
 pub async fn run() {
     #[cfg(not(target_arch = "wasm32"))]
     let args: Vec<String> = std::env::args().collect();
