@@ -1,3 +1,4 @@
+mod net_input;
 mod session;
 
 use std::cell::RefCell;
@@ -9,7 +10,7 @@ use std::rc::Rc;
 use macroquad::prelude::*;
 use sim::{Input, Level, ParticleKind, RectKind, World, DEFAULT_SEED, FUEL_MAX, SHIELD_MAX};
 
-use session::{LocalSession, Session};
+use session::{LocalSession, Session, SyncTestRunner};
 
 const SHIP_SIZE: f32 = 14.0;
 const SHIP_COLORS: [Color; 2] = [SKYBLUE, ORANGE];
@@ -32,20 +33,32 @@ fn window_conf() -> Conf {
 
 #[macroquad::main(window_conf)]
 async fn main() {
-    let replay_enabled = std::env::args().any(|a| a == "--replay");
+    let args: Vec<String> = std::env::args().collect();
+    let sync_test = args.iter().any(|a| a == "--sync-test");
+    let replay_enabled = !sync_test && args.iter().any(|a| a == "--replay");
     let replay = if replay_enabled { Some(Rc::new(RefCell::new(Replay::open()))) } else { None };
 
     let seed = replay.as_ref().map(|w| w.borrow().seed).unwrap_or(DEFAULT_SEED);
     let world = World::with_seed(Level::default(), seed);
 
-    let mut session = LocalSession::new(world);
-    if let Some(r) = &replay {
-        let recorded = r.borrow().recorded.clone();
-        session.replay(&recorded);
-        println!("[replay] replayed {} ticks from {}", recorded.len(), r.borrow().path.display());
-        let r2 = r.clone();
-        session = session.with_recorder(Box::new(move |inputs| r2.borrow_mut().record(inputs)));
-    }
+    let mut session: Box<dyn Session> = if sync_test {
+        println!("[sync-test] rollback validator engaged; check_distance=4");
+        Box::new(SyncTestRunner::new(world))
+    } else {
+        let mut local = LocalSession::new(world);
+        if let Some(r) = &replay {
+            let recorded = r.borrow().recorded.clone();
+            local.replay(&recorded);
+            println!(
+                "[replay] replayed {} ticks from {}",
+                recorded.len(),
+                r.borrow().path.display()
+            );
+            let r2 = r.clone();
+            local = local.with_recorder(Box::new(move |inputs| r2.borrow_mut().record(inputs)));
+        }
+        Box::new(local)
+    };
 
     let mut fullscreen = false;
     loop {
@@ -60,8 +73,10 @@ async fn main() {
             r.borrow_mut().reset();
             let world = World::with_seed(Level::default(), DEFAULT_SEED);
             let r2 = r.clone();
-            session = LocalSession::new(world)
-                .with_recorder(Box::new(move |inputs| r2.borrow_mut().record(inputs)));
+            session = Box::new(
+                LocalSession::new(world)
+                    .with_recorder(Box::new(move |inputs| r2.borrow_mut().record(inputs))),
+            );
         }
 
         session.advance(get_frame_time());
