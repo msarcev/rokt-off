@@ -530,6 +530,7 @@ dependencies = [
  "serde",
  "sim",
  "tokio",
+ "wasm-bindgen",
  "wasm-bindgen-futures",
 ]
 
