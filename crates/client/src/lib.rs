@@ -2,14 +2,11 @@ pub mod net;
 pub mod net_input;
 pub mod session;
 
-use std::cell::RefCell;
-use std::fs::{File, OpenOptions};
-use std::io::{Read, Write};
-use std::path::PathBuf;
-use std::rc::Rc;
+#[cfg(not(target_arch = "wasm32"))]
+mod replay;
 
 use macroquad::prelude::*;
-use sim::{DEFAULT_SEED, FUEL_MAX, Input, Level, ParticleKind, RectKind, SHIELD_MAX, World};
+use sim::{DEFAULT_SEED, FUEL_MAX, Level, ParticleKind, RectKind, SHIELD_MAX, World};
 
 use session::{LocalSession, P2pRunner, Session, SyncTestRunner};
 
@@ -38,13 +35,35 @@ pub fn window_conf() -> Conf {
 }
 
 pub async fn run() {
+    #[cfg(not(target_arch = "wasm32"))]
     let args: Vec<String> = std::env::args().collect();
+    #[cfg(not(target_arch = "wasm32"))]
     let net = args.iter().any(|a| a == "--net");
+    #[cfg(not(target_arch = "wasm32"))]
     let sync_test = !net && args.iter().any(|a| a == "--sync-test");
-    let replay_enabled = !net && !sync_test && args.iter().any(|a| a == "--replay");
-    let replay = if replay_enabled { Some(Rc::new(RefCell::new(Replay::open()))) } else { None };
 
+    #[cfg(target_arch = "wasm32")]
+    let net = false;
+    #[cfg(target_arch = "wasm32")]
+    let sync_test = false;
+
+    #[cfg(not(target_arch = "wasm32"))]
+    let replay = {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+        let replay_enabled = !net && !sync_test && args.iter().any(|a| a == "--replay");
+        if replay_enabled {
+            Some(Rc::new(RefCell::new(replay::Replay::open())))
+        } else {
+            None
+        }
+    };
+
+    #[cfg(not(target_arch = "wasm32"))]
     let seed = replay.as_ref().map(|w| w.borrow().seed).unwrap_or(DEFAULT_SEED);
+    #[cfg(target_arch = "wasm32")]
+    let seed = DEFAULT_SEED;
+
     let world = World::with_seed(Level::default(), seed);
 
     let mut session: Box<dyn Session> = if net {
@@ -54,7 +73,9 @@ pub async fn run() {
         println!("[sync-test] rollback validator engaged; check_distance=4");
         Box::new(SyncTestRunner::new(world))
     } else {
+        #[allow(unused_mut)]
         let mut local = LocalSession::new(world);
+        #[cfg(not(target_arch = "wasm32"))]
         if let Some(r) = &replay {
             let recorded = r.borrow().recorded.clone();
             local.replay(&recorded);
@@ -76,6 +97,7 @@ pub async fn run() {
             set_fullscreen(fullscreen);
         }
 
+        #[cfg(not(target_arch = "wasm32"))]
         if let Some(r) = &replay
             && is_key_pressed(KeyCode::R)
         {
@@ -132,76 +154,6 @@ pub async fn run() {
 
         next_frame().await
     }
-}
-
-struct Replay {
-    path: PathBuf,
-    file: File,
-    seed: u64,
-    recorded: Vec<[Input; 2]>,
-}
-
-impl Replay {
-    fn open() -> Self {
-        let path = replay_path();
-        if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-
-        let (seed, recorded) = match File::open(&path) {
-            Ok(mut f) => {
-                let mut buf = Vec::new();
-                f.read_to_end(&mut buf).expect("read dev.bin");
-                if buf.len() >= 8 {
-                    let seed = u64::from_le_bytes(buf[0..8].try_into().unwrap());
-                    let recorded = buf[8..]
-                        .chunks_exact(2)
-                        .map(|c| [Input::from_bits_truncate(c[0]), Input::from_bits_truncate(c[1])])
-                        .collect();
-                    (seed, recorded)
-                } else {
-                    (DEFAULT_SEED, Vec::new())
-                }
-            }
-            Err(_) => (DEFAULT_SEED, Vec::new()),
-        };
-
-        if recorded.is_empty() {
-            let mut f = File::create(&path).expect("create dev.bin");
-            f.write_all(&seed.to_le_bytes()).expect("write seed");
-        }
-
-        let file = OpenOptions::new()
-            .append(true)
-            .open(&path)
-            .expect("open dev.bin for append");
-
-        Self { path, file, seed, recorded }
-    }
-
-    fn record(&mut self, inputs: [Input; 2]) {
-        let _ = self.file.write_all(&[inputs[0].bits(), inputs[1].bits()]);
-    }
-
-    fn reset(&mut self) {
-        let mut f = File::create(&self.path).expect("truncate dev.bin");
-        f.write_all(&DEFAULT_SEED.to_le_bytes()).expect("write seed");
-        self.file = OpenOptions::new()
-            .append(true)
-            .open(&self.path)
-            .expect("reopen dev.bin");
-        self.seed = DEFAULT_SEED;
-        self.recorded.clear();
-        println!("[replay] reset");
-    }
-}
-
-fn replay_path() -> PathBuf {
-    let exe = std::env::current_exe().expect("current_exe");
-    exe.parent()
-        .and_then(|p| p.parent())
-        .map(|target| target.join("dev.bin"))
-        .unwrap_or_else(|| PathBuf::from("target/dev.bin"))
 }
 
 fn draw_level(level: &Level) {
