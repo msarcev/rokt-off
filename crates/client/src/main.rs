@@ -1,3 +1,4 @@
+mod net;
 mod net_input;
 mod session;
 
@@ -10,7 +11,9 @@ use std::rc::Rc;
 use macroquad::prelude::*;
 use sim::{Input, Level, ParticleKind, RectKind, World, DEFAULT_SEED, FUEL_MAX, SHIELD_MAX};
 
-use session::{LocalSession, Session, SyncTestRunner};
+use session::{LocalSession, P2pRunner, Session, SyncTestRunner};
+
+const SIGNALING_URL: &str = "ws://localhost:3536/head-on-dev?next=2";
 
 const SHIP_SIZE: f32 = 14.0;
 const SHIP_COLORS: [Color; 2] = [SKYBLUE, ORANGE];
@@ -34,14 +37,18 @@ fn window_conf() -> Conf {
 #[macroquad::main(window_conf)]
 async fn main() {
     let args: Vec<String> = std::env::args().collect();
-    let sync_test = args.iter().any(|a| a == "--sync-test");
-    let replay_enabled = !sync_test && args.iter().any(|a| a == "--replay");
+    let net = args.iter().any(|a| a == "--net");
+    let sync_test = !net && args.iter().any(|a| a == "--sync-test");
+    let replay_enabled = !net && !sync_test && args.iter().any(|a| a == "--replay");
     let replay = if replay_enabled { Some(Rc::new(RefCell::new(Replay::open()))) } else { None };
 
     let seed = replay.as_ref().map(|w| w.borrow().seed).unwrap_or(DEFAULT_SEED);
     let world = World::with_seed(Level::default(), seed);
 
-    let mut session: Box<dyn Session> = if sync_test {
+    let mut session: Box<dyn Session> = if net {
+        println!("[net] connecting to {SIGNALING_URL} — waiting for second peer...");
+        Box::new(P2pRunner::new(world, SIGNALING_URL))
+    } else if sync_test {
         println!("[sync-test] rollback validator engaged; check_distance=4");
         Box::new(SyncTestRunner::new(world))
     } else {

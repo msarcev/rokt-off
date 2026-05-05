@@ -1,6 +1,7 @@
 use ggrs::{
-    Config, GgrsRequest, PlayerType, PredictRepeatLast, SessionBuilder, SyncTestSession,
+    Config, GgrsRequest, P2PSession, PlayerType, SessionBuilder, SessionState, SyncTestSession,
 };
+use matchbox_socket::{PeerId, PeerState, WebRtcSocket};
 use macroquad::prelude::{is_key_down, KeyCode};
 use sim::{Input, World};
 
@@ -60,15 +61,14 @@ impl Session for LocalSession {
 
 /// GGRS type bundle. `State = World` (already `Clone + Send + Sync`).
 /// `Input = NetInput` (a serde-able wrapper around `sim::Input`).
-/// `Address = String` is unused in SyncTest; gets re-used for matchbox PeerId
-/// in commit 3.
+/// `Address = PeerId` so the same config is reused for matchbox P2P.
+#[derive(Debug)]
 pub struct GgrsConfig;
 
 impl Config for GgrsConfig {
     type Input = NetInput;
-    type InputPredictor = PredictRepeatLast;
     type State = World;
-    type Address = String;
+    type Address = PeerId;
 }
 
 /// Offline rollback validator. Re-simulates `check_distance` frames every
@@ -85,7 +85,6 @@ impl SyncTestRunner {
     pub fn new(world: World) -> Self {
         let session = SessionBuilder::<GgrsConfig>::new()
             .with_num_players(2)
-            .expect("num_players")
             .with_check_distance(4)
             .with_input_delay(0)
             .add_player(PlayerType::Local, 0)
@@ -141,6 +140,139 @@ impl Session for SyncTestRunner {
         self.accumulator += frame_dt;
         while self.accumulator >= sim::DT {
             self.step_one();
+            self.accumulator -= sim::DT;
+        }
+    }
+
+    fn world(&self) -> &World {
+        &self.world
+    }
+}
+
+/// Live P2P session driven by matchbox WebRTC + GGRS rollback. The socket
+/// lives across both phases (waiting for peer / running); the GGRS session
+/// is only built once both peers are known.
+pub struct P2pRunner {
+    socket: WebRtcSocket,
+    session: Option<P2PSession<GgrsConfig>>,
+    world: World,
+    accumulator: f32,
+    local_handles: Vec<usize>,
+}
+
+impl P2pRunner {
+    pub fn new(world: World, room_url: &str) -> Self {
+        let socket = crate::net::open(room_url);
+        Self {
+            socket,
+            session: None,
+            world,
+            accumulator: 0.0,
+            local_handles: Vec::new(),
+        }
+    }
+
+    fn poll_lobby(&mut self) {
+        for (peer, state) in self.socket.update_peers() {
+            match state {
+                PeerState::Connected => println!("[net] peer joined: {peer}"),
+                PeerState::Disconnected => println!("[net] peer left: {peer}"),
+            }
+        }
+
+        let players = self.socket.players();
+        if players.len() < 2 {
+            return;
+        }
+
+        let mut builder = SessionBuilder::<GgrsConfig>::new()
+            .with_num_players(2)
+            .with_input_delay(2)
+            .with_max_prediction_window(8);
+
+        let mut local_handles = Vec::new();
+        for (handle, player) in players.iter().enumerate() {
+            if matches!(player, PlayerType::Local) {
+                local_handles.push(handle);
+            }
+            builder = builder
+                .add_player(*player, handle)
+                .expect("add player");
+        }
+
+        let channel = self.socket.take_channel(0).expect("take channel 0");
+        let session = builder
+            .start_p2p_session(channel)
+            .expect("start p2p session");
+        println!("[net] starting match; local_handles={local_handles:?}, frame=0");
+        self.local_handles = local_handles;
+        self.session = Some(session);
+    }
+
+    fn step_one(
+        world: &mut World,
+        session: &mut P2PSession<GgrsConfig>,
+        local_handles: &[usize],
+    ) {
+        session.poll_remote_clients();
+        for ev in session.events() {
+            println!("[net] event: {ev:?}");
+        }
+        if session.current_state() != SessionState::Running {
+            return;
+        }
+
+        // Local input mapping: handle 0 → P1 keys, handle 1 → P2 keys.
+        // After matchbox player-id sort, exactly one of these is local.
+        for &h in local_handles {
+            let i = if h == 0 { poll_input_p1() } else { poll_input_p2() };
+            if let Err(e) = session.add_local_input(h, NetInput::from(i)) {
+                eprintln!("[net] add_local_input handle={h}: {e:?}");
+            }
+        }
+
+        match session.advance_frame() {
+            Ok(requests) => {
+                for req in requests {
+                    Self::handle_request(world, req);
+                }
+            }
+            Err(ggrs::GgrsError::PredictionThreshold) => {
+                // Remote inputs aren't here yet; let them catch up.
+            }
+            Err(e) => eprintln!("[net] advance_frame: {e:?}"),
+        }
+    }
+
+    fn handle_request(world: &mut World, req: GgrsRequest<GgrsConfig>) {
+        match req {
+            GgrsRequest::SaveGameState { cell, frame } => {
+                cell.save(frame, Some(world.clone()), None);
+            }
+            GgrsRequest::LoadGameState { cell, .. } => {
+                *world = cell.load().expect("loaded state present");
+            }
+            GgrsRequest::AdvanceFrame { inputs } => {
+                let p0: Input = inputs[0].0.into();
+                let p1: Input = inputs[1].0.into();
+                world.tick([p0, p1]);
+            }
+        }
+    }
+}
+
+impl Session for P2pRunner {
+    fn advance(&mut self, frame_dt: f32) {
+        if self.session.is_none() {
+            self.poll_lobby();
+            self.accumulator = 0.0;
+            return;
+        }
+
+        self.accumulator += frame_dt;
+        let session = self.session.as_mut().expect("session present");
+        while self.accumulator >= sim::DT {
+            Self::step_one(&mut self.world, session, &self.local_handles);
             self.accumulator -= sim::DT;
         }
     }
