@@ -13,6 +13,7 @@ fn window_conf() -> Conf {
         window_title: "head-on-rs".to_owned(),
         window_width: 1280,
         window_height: 720,
+        window_resizable: true,
         high_dpi: true,
         ..Default::default()
     }
@@ -34,7 +35,13 @@ async fn main() {
     }
 
     let mut accumulator = 0.0_f32;
+    let mut fullscreen = false;
     loop {
+        if is_key_pressed(KeyCode::F11) {
+            fullscreen = !fullscreen;
+            set_fullscreen(fullscreen);
+        }
+
         if replay.is_some() && is_key_pressed(KeyCode::R) {
             replay.as_mut().unwrap().reset();
             world = World::with_seed(Level::default(), DEFAULT_SEED);
@@ -51,6 +58,29 @@ async fn main() {
             accumulator -= sim::DT;
         }
 
+        let sw = screen_width();
+        let sh = screen_height();
+        let scale = (sw / 1280.0).min(sh / 720.0);
+        let view_w = 1280.0 * scale;
+        let view_h = 720.0 * scale;
+        let off_x = ((sw - view_w) * 0.5).floor();
+        let off_y = ((sh - view_h) * 0.5).floor();
+
+        let dpi = screen_dpi_scale();
+        let cam = Camera2D {
+            target: vec2(640.0, 360.0),
+            zoom: vec2(2.0 / 1280.0, 2.0 / 720.0),
+            viewport: Some((
+                (off_x * dpi) as i32,
+                (off_y * dpi) as i32,
+                (view_w * dpi) as i32,
+                (view_h * dpi) as i32,
+            )),
+            ..Default::default()
+        };
+
+        clear_background(BLACK);
+        set_camera(&cam);
         clear_background(Color::from_rgba(12, 14, 20, 255));
         draw_level(&world.level);
         for (idx, ship) in world.ships.iter().enumerate() {
@@ -60,7 +90,8 @@ async fn main() {
         }
         draw_bullets(&world);
         draw_particles(&world);
-        draw_hud(&world);
+        set_default_camera();
+        draw_hud(&world, off_x, off_y, view_w);
 
         next_frame().await
     }
@@ -147,7 +178,7 @@ fn poll_input_p1() -> Input {
     if is_key_down(KeyCode::D) {
         input |= Input::ROTATE_RIGHT;
     }
-    if is_key_down(KeyCode::Space) {
+    if is_key_down(KeyCode::F) {
         input |= Input::FIRE;
     }
     input
@@ -164,7 +195,7 @@ fn poll_input_p2() -> Input {
     if is_key_down(KeyCode::Right) {
         input |= Input::ROTATE_RIGHT;
     }
-    if is_key_down(KeyCode::M) {
+    if is_key_down(KeyCode::RightControl) {
         input |= Input::FIRE;
     }
     input
@@ -216,14 +247,13 @@ fn draw_particles(world: &World) {
     }
 }
 
-fn draw_hud(world: &World) {
+fn draw_hud(world: &World, vx: f32, vy: f32, vw: f32) {
     const BAR_W: f32 = 180.0;
     const BAR_H: f32 = 10.0;
     const PAD: f32 = 12.0;
-    let screen_w = screen_width();
     for (idx, ship) in world.ships.iter().enumerate() {
-        let x = if idx == 0 { PAD } else { screen_w - PAD - BAR_W };
-        let y0 = PAD;
+        let x = if idx == 0 { vx + PAD } else { vx + vw - PAD - BAR_W };
+        let y0 = vy + PAD;
 
         draw_text(
             &format!("P{}", idx + 1),
@@ -234,9 +264,7 @@ fn draw_hud(world: &World) {
         );
 
         let bar_x = x + 28.0;
-        // Shield bar (cyan).
         draw_bar(bar_x, y0, BAR_W - 28.0, BAR_H, ship.shields / SHIELD_MAX, SKYBLUE);
-        // Fuel bar (yellow).
         draw_bar(bar_x, y0 + BAR_H + 4.0, BAR_W - 28.0, BAR_H, ship.fuel / FUEL_MAX, YELLOW);
     }
 }
