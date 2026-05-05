@@ -17,13 +17,14 @@ pub const SHIP_ROT_SPEED: f32 = 12.5;
 pub const SHIP_ANGULAR_DAMPING: f32 = 0.90;
 pub const DEFAULT_GRAVITY: f32 = 90.0;
 pub const FUEL_MAX: f32 = 1000.0;
-pub const FUEL_BURN_PER_SEC: f32 = 40.0;
+pub const FUEL_BURN_PER_SEC: f32 = 80.0;
 pub const SHIELD_MAX: f32 = 100.0;
 
 pub const IMPACT_DAMAGE_SCALE: f32 = 0.25;
 pub const SCRAPE_THRESHOLD: f32 = 50.0;
 pub const COLLISION_BOUNCE: f32 = 0.3;
-pub const REFUEL_RATE_PER_SEC: f32 = 60.0;
+pub const FUEL_REFILL_PER_SEC: f32 = 600.0;
+pub const SHIELD_RECHARGE_PER_SEC: f32 = 60.0;
 
 pub const UPRIGHT_ANGLE: f32 = -std::f32::consts::FRAC_PI_2;
 pub const SETTLED_ANGLE_TOL: f32 = 0.18;
@@ -49,12 +50,13 @@ pub const TIPPED_SETTLE_SNAP_TOL: f32 = 0.3;
 // suppresses the tipped-settle pivot so A/D recovery isn't fought.
 pub const TIPPED_SETTLE_AV_THRESHOLD: f32 = 0.5;
 pub const CHIP_DAMAGE_PER_BOUNCE: f32 = 1.5;
+pub const WALL_CONTACT_DPS: f32 = 30.0;
 pub const TIP_DMG_BASE: f32 = 2.5;
 pub const TIP_DMG_RAMP: f32 = 0.2;
 
 pub const MUZZLE_SPEED: f32 = 600.0;
 pub const BULLET_TTL: f32 = 1.5;
-pub const FIRE_COOLDOWN: f32 = 0.18;
+pub const FIRE_COOLDOWN: f32 = 0.10;
 pub const MAX_BULLETS: usize = 64;
 pub const BULLET_DAMAGE: f32 = 20.0;
 
@@ -297,9 +299,9 @@ impl World {
                 if tilt.abs() < SETTLED_ANGLE_TOL {
                     ship.settled_ticks = ship.settled_ticks.saturating_add(1);
                     if ship.settled_ticks > SETTLED_DELAY_TICKS {
-                        ship.fuel = (ship.fuel + REFUEL_RATE_PER_SEC * DT).min(FUEL_MAX);
+                        ship.fuel = (ship.fuel + FUEL_REFILL_PER_SEC * DT).min(FUEL_MAX);
                         ship.shields =
-                            (ship.shields + REFUEL_RATE_PER_SEC * DT).min(SHIELD_MAX);
+                            (ship.shields + SHIELD_RECHARGE_PER_SEC * DT).min(SHIELD_MAX);
                     }
                 } else {
                     ship.settled_ticks = 0;
@@ -557,6 +559,12 @@ fn resolve_ship_wall(ship: &mut Ship, rect: &Rect) {
     let delta = ship.pos - closest;
     let dist_sq = delta.length_squared();
     if dist_sq >= SHIP_RADIUS * SHIP_RADIUS {
+        return;
+    }
+
+    ship.shields = (ship.shields - WALL_CONTACT_DPS * DT).max(0.0);
+    if ship.shields <= 0.0 {
+        ship.alive = false;
         return;
     }
 
