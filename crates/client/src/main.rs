@@ -1,9 +1,22 @@
+mod net;
+mod net_input;
+mod session;
+
+use std::cell::RefCell;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::PathBuf;
+use std::rc::Rc;
 
 use macroquad::prelude::*;
 use sim::{Input, Level, ParticleKind, RectKind, World, DEFAULT_SEED, FUEL_MAX, SHIELD_MAX};
+
+use session::{LocalSession, P2pRunner, Session, SyncTestRunner};
+
+const SIGNALING_URL: &str = match option_env!("HEADON_SIGNALING_URL") {
+    Some(s) => s,
+    None => "ws://localhost:3536/head-on-dev?next=2",
+};
 
 const SHIP_SIZE: f32 = 14.0;
 const SHIP_COLORS: [Color; 2] = [SKYBLUE, ORANGE];
@@ -26,20 +39,37 @@ fn window_conf() -> Conf {
 
 #[macroquad::main(window_conf)]
 async fn main() {
-    let replay_enabled = std::env::args().any(|a| a == "--replay");
-    let mut replay = if replay_enabled { Some(Replay::open()) } else { None };
+    let args: Vec<String> = std::env::args().collect();
+    let net = args.iter().any(|a| a == "--net");
+    let sync_test = !net && args.iter().any(|a| a == "--sync-test");
+    let replay_enabled = !net && !sync_test && args.iter().any(|a| a == "--replay");
+    let replay = if replay_enabled { Some(Rc::new(RefCell::new(Replay::open()))) } else { None };
 
-    let seed = replay.as_ref().map(|w| w.seed).unwrap_or(DEFAULT_SEED);
-    let mut world = World::with_seed(Level::default(), seed);
+    let seed = replay.as_ref().map(|w| w.borrow().seed).unwrap_or(DEFAULT_SEED);
+    let world = World::with_seed(Level::default(), seed);
 
-    if let Some(w) = &replay {
-        for inputs in &w.recorded {
-            world.tick(*inputs);
+    let mut session: Box<dyn Session> = if net {
+        println!("[net] connecting to {SIGNALING_URL} — waiting for second peer...");
+        Box::new(P2pRunner::new(world, SIGNALING_URL))
+    } else if sync_test {
+        println!("[sync-test] rollback validator engaged; check_distance=4");
+        Box::new(SyncTestRunner::new(world))
+    } else {
+        let mut local = LocalSession::new(world);
+        if let Some(r) = &replay {
+            let recorded = r.borrow().recorded.clone();
+            local.replay(&recorded);
+            println!(
+                "[replay] replayed {} ticks from {}",
+                recorded.len(),
+                r.borrow().path.display()
+            );
+            let r2 = r.clone();
+            local = local.with_recorder(Box::new(move |inputs| r2.borrow_mut().record(inputs)));
         }
-        println!("[replay] replayed {} ticks from {}", w.recorded.len(), w.path.display());
-    }
+        Box::new(local)
+    };
 
-    let mut accumulator = 0.0_f32;
     let mut fullscreen = false;
     loop {
         if is_key_pressed(KeyCode::F11) {
@@ -47,22 +77,21 @@ async fn main() {
             set_fullscreen(fullscreen);
         }
 
-        if replay.is_some() && is_key_pressed(KeyCode::R) {
-            replay.as_mut().unwrap().reset();
-            world = World::with_seed(Level::default(), DEFAULT_SEED);
-            accumulator = 0.0;
+        if let Some(r) = &replay
+            && is_key_pressed(KeyCode::R)
+        {
+            r.borrow_mut().reset();
+            let world = World::with_seed(Level::default(), DEFAULT_SEED);
+            let r2 = r.clone();
+            session = Box::new(
+                LocalSession::new(world)
+                    .with_recorder(Box::new(move |inputs| r2.borrow_mut().record(inputs))),
+            );
         }
 
-        accumulator += get_frame_time();
-        while accumulator >= sim::DT {
-            let inputs = [poll_input_p1(), poll_input_p2()];
-            world.tick(inputs);
-            if let Some(w) = &mut replay {
-                w.record(inputs);
-            }
-            accumulator -= sim::DT;
-        }
+        session.advance(get_frame_time());
 
+        let world = session.world();
         let sw = screen_width();
         let sh = screen_height();
         let dpi = screen_dpi_scale();
@@ -97,10 +126,10 @@ async fn main() {
                 draw_ship(ship, SHIP_COLORS[idx]);
             }
         }
-        draw_bullets(&world);
-        draw_particles(&world);
+        draw_bullets(world);
+        draw_particles(world);
         set_default_camera();
-        draw_hud(&world, 0.0, sh - hud_h_px, sw, hud_h_px, hud_h_px / HUD_H);
+        draw_hud(world, 0.0, sh - hud_h_px, sw, hud_h_px, hud_h_px / HUD_H);
 
         next_frame().await
     }
@@ -174,40 +203,6 @@ fn replay_path() -> PathBuf {
         .and_then(|p| p.parent())
         .map(|target| target.join("dev.bin"))
         .unwrap_or_else(|| PathBuf::from("target/dev.bin"))
-}
-
-fn poll_input_p1() -> Input {
-    let mut input = Input::empty();
-    if is_key_down(KeyCode::W) {
-        input |= Input::THRUST;
-    }
-    if is_key_down(KeyCode::A) {
-        input |= Input::ROTATE_LEFT;
-    }
-    if is_key_down(KeyCode::D) {
-        input |= Input::ROTATE_RIGHT;
-    }
-    if is_key_down(KeyCode::F) {
-        input |= Input::FIRE;
-    }
-    input
-}
-
-fn poll_input_p2() -> Input {
-    let mut input = Input::empty();
-    if is_key_down(KeyCode::Up) {
-        input |= Input::THRUST;
-    }
-    if is_key_down(KeyCode::Left) {
-        input |= Input::ROTATE_LEFT;
-    }
-    if is_key_down(KeyCode::Right) {
-        input |= Input::ROTATE_RIGHT;
-    }
-    if is_key_down(KeyCode::RightControl) {
-        input |= Input::FIRE;
-    }
-    input
 }
 
 fn draw_level(level: &Level) {
