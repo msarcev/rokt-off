@@ -1,3 +1,4 @@
+pub mod menu;
 pub mod net;
 pub mod net_input;
 pub mod session;
@@ -40,60 +41,53 @@ pub fn wasm_start() {
     macroquad::Window::from_config(window_conf(), run());
 }
 
+enum AppState {
+    Menu(menu::Menu),
+    Playing(Box<dyn Session>),
+}
+
 pub async fn run() {
     #[cfg(not(target_arch = "wasm32"))]
-    let args: Vec<String> = std::env::args().collect();
-    #[cfg(not(target_arch = "wasm32"))]
-    let net = args.iter().any(|a| a == "--net");
-    #[cfg(not(target_arch = "wasm32"))]
-    let sync_test = !net && args.iter().any(|a| a == "--sync-test");
+    let mut replay: Option<std::rc::Rc<std::cell::RefCell<replay::Replay>>> = None;
 
-    #[cfg(target_arch = "wasm32")]
-    let net = false;
-    #[cfg(target_arch = "wasm32")]
-    let sync_test = false;
-
-    #[cfg(not(target_arch = "wasm32"))]
-    let replay = {
-        use std::cell::RefCell;
-        use std::rc::Rc;
-        let replay_enabled = !net && !sync_test && args.iter().any(|a| a == "--replay");
-        if replay_enabled {
-            Some(Rc::new(RefCell::new(replay::Replay::open())))
-        } else {
-            None
-        }
-    };
-
-    #[cfg(not(target_arch = "wasm32"))]
-    let seed = replay.as_ref().map(|w| w.borrow().seed).unwrap_or(DEFAULT_SEED);
-    #[cfg(target_arch = "wasm32")]
-    let seed = DEFAULT_SEED;
-
-    let world = World::with_seed(Level::default(), seed);
-
-    let mut session: Box<dyn Session> = if net {
-        println!("[net] connecting to {SIGNALING_URL} — waiting for second peer...");
-        Box::new(P2pRunner::new(world, SIGNALING_URL))
-    } else if sync_test {
-        println!("[sync-test] rollback validator engaged; check_distance=4");
-        Box::new(SyncTestRunner::new(world))
-    } else {
-        #[allow(unused_mut)]
-        let mut local = LocalSession::new(world);
+    let mut state: AppState = {
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some(r) = &replay {
-            let recorded = r.borrow().recorded.clone();
-            local.replay(&recorded);
-            println!(
-                "[replay] replayed {} ticks from {}",
-                recorded.len(),
-                r.borrow().path.display()
-            );
-            let r2 = r.clone();
-            local = local.with_recorder(Box::new(move |inputs| r2.borrow_mut().record(inputs)));
+        {
+            let args: Vec<String> = std::env::args().collect();
+            let net = args.iter().any(|a| a == "--net");
+            let sync_test = !net && args.iter().any(|a| a == "--sync-test");
+            let replay_flag = !net && !sync_test && args.iter().any(|a| a == "--replay");
+
+            if net {
+                AppState::Playing(make_session(menu::MenuChoice::Net))
+            } else if sync_test {
+                AppState::Playing(make_session(menu::MenuChoice::SyncTest))
+            } else if replay_flag {
+                use std::cell::RefCell;
+                use std::rc::Rc;
+                let r = Rc::new(RefCell::new(replay::Replay::open()));
+                let world = World::with_seed(Level::default(), r.borrow().seed);
+                let recorded = r.borrow().recorded.clone();
+                let mut local = LocalSession::new(world);
+                local.replay(&recorded);
+                println!(
+                    "[replay] replayed {} ticks from {}",
+                    recorded.len(),
+                    r.borrow().path.display()
+                );
+                let r2 = r.clone();
+                local =
+                    local.with_recorder(Box::new(move |inputs| r2.borrow_mut().record(inputs)));
+                replay = Some(r);
+                AppState::Playing(Box::new(local))
+            } else {
+                AppState::Menu(menu::Menu::new())
+            }
         }
-        Box::new(local)
+        #[cfg(target_arch = "wasm32")]
+        {
+            AppState::Menu(menu::Menu::new())
+        }
     };
 
     let mut fullscreen = false;
@@ -103,63 +97,92 @@ pub async fn run() {
             set_fullscreen(fullscreen);
         }
 
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(r) = &replay
-            && is_key_pressed(KeyCode::R)
-        {
-            r.borrow_mut().reset();
-            let world = World::with_seed(Level::default(), DEFAULT_SEED);
-            let r2 = r.clone();
-            session = Box::new(
-                LocalSession::new(world)
-                    .with_recorder(Box::new(move |inputs| r2.borrow_mut().record(inputs))),
-            );
-        }
+        match &mut state {
+            AppState::Menu(menu) => {
+                menu.tick();
+                menu.draw();
+                if let Some(choice) = menu.take_choice() {
+                    state = AppState::Playing(make_session(choice));
+                }
+            }
+            AppState::Playing(session) => {
+                #[cfg(not(target_arch = "wasm32"))]
+                if let Some(r) = &replay
+                    && is_key_pressed(KeyCode::R)
+                {
+                    r.borrow_mut().reset();
+                    let world = World::with_seed(Level::default(), DEFAULT_SEED);
+                    let r2 = r.clone();
+                    *session = Box::new(
+                        LocalSession::new(world).with_recorder(Box::new(move |inputs| {
+                            r2.borrow_mut().record(inputs)
+                        })),
+                    );
+                }
 
-        session.advance(get_frame_time());
-
-        let world = session.world();
-        let sw = screen_width();
-        let sh = screen_height();
-        let dpi = screen_dpi_scale();
-
-        let hud_h_px = (sh * HUD_H / TOTAL_H).floor();
-        let avail_h = sh - hud_h_px;
-        let play_scale = (sw / PLAY_W).min(avail_h / PLAY_H);
-        let play_w_px = PLAY_W * play_scale;
-        let play_h_px = PLAY_H * play_scale;
-        let play_off_x = ((sw - play_w_px) * 0.5).floor();
-        let play_off_y = ((avail_h - play_h_px) * 0.5).floor();
-
-        let vp_y = sh - play_off_y - play_h_px;
-        let cam = Camera2D {
-            target: vec2(PLAY_W / 2.0, PLAY_H / 2.0),
-            zoom: vec2(2.0 / PLAY_W, 2.0 / PLAY_H),
-            viewport: Some((
-                (play_off_x * dpi) as i32,
-                (vp_y * dpi) as i32,
-                (play_w_px * dpi) as i32,
-                (play_h_px * dpi) as i32,
-            )),
-            ..Default::default()
-        };
-
-        clear_background(BLACK);
-        set_camera(&cam);
-        clear_background(Color::from_rgba(12, 14, 20, 255));
-        draw_level(&world.level);
-        for (idx, ship) in world.ships.iter().enumerate() {
-            if ship.alive {
-                draw_ship(ship, SHIP_COLORS[idx]);
+                session.advance(get_frame_time());
+                draw_playing(session.world());
             }
         }
-        draw_bullets(world);
-        draw_particles(world);
-        set_default_camera();
-        draw_hud(world, 0.0, sh - hud_h_px, sw, hud_h_px, hud_h_px / HUD_H);
 
         next_frame().await
     }
+}
+
+fn make_session(choice: menu::MenuChoice) -> Box<dyn Session> {
+    let world = World::with_seed(Level::default(), DEFAULT_SEED);
+    match choice {
+        menu::MenuChoice::Local => Box::new(LocalSession::new(world)),
+        menu::MenuChoice::Net => {
+            println!("[net] connecting to {SIGNALING_URL} — waiting for second peer...");
+            Box::new(P2pRunner::new(world, SIGNALING_URL))
+        }
+        menu::MenuChoice::SyncTest => {
+            println!("[sync-test] rollback validator engaged; check_distance=4");
+            Box::new(SyncTestRunner::new(world))
+        }
+    }
+}
+
+fn draw_playing(world: &World) {
+    let sw = screen_width();
+    let sh = screen_height();
+    let dpi = screen_dpi_scale();
+
+    let hud_h_px = (sh * HUD_H / TOTAL_H).floor();
+    let avail_h = sh - hud_h_px;
+    let play_scale = (sw / PLAY_W).min(avail_h / PLAY_H);
+    let play_w_px = PLAY_W * play_scale;
+    let play_h_px = PLAY_H * play_scale;
+    let play_off_x = ((sw - play_w_px) * 0.5).floor();
+    let play_off_y = ((avail_h - play_h_px) * 0.5).floor();
+
+    let vp_y = sh - play_off_y - play_h_px;
+    let cam = Camera2D {
+        target: vec2(PLAY_W / 2.0, PLAY_H / 2.0),
+        zoom: vec2(2.0 / PLAY_W, 2.0 / PLAY_H),
+        viewport: Some((
+            (play_off_x * dpi) as i32,
+            (vp_y * dpi) as i32,
+            (play_w_px * dpi) as i32,
+            (play_h_px * dpi) as i32,
+        )),
+        ..Default::default()
+    };
+
+    clear_background(BLACK);
+    set_camera(&cam);
+    clear_background(Color::from_rgba(12, 14, 20, 255));
+    draw_level(&world.level);
+    for (idx, ship) in world.ships.iter().enumerate() {
+        if ship.alive {
+            draw_ship(ship, SHIP_COLORS[idx]);
+        }
+    }
+    draw_bullets(world);
+    draw_particles(world);
+    set_default_camera();
+    draw_hud(world, 0.0, sh - hud_h_px, sw, hud_h_px, hud_h_px / HUD_H);
 }
 
 fn draw_level(level: &Level) {
