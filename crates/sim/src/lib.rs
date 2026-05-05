@@ -212,8 +212,10 @@ impl Default for Level {
             Rect { min: Vec2::ZERO, max: Vec2::new(20.0, size.y), kind: RectKind::Wall },
             // right wall
             Rect { min: Vec2::new(size.x - 20.0, 0.0), max: size, kind: RectKind::Wall },
-            // central refuel pad
-            Rect { min: Vec2::new(560.0, 620.0), max: Vec2::new(720.0, 640.0), kind: RectKind::Pad },
+            // P1 landing pad (centered on spawn x=240)
+            Rect { min: Vec2::new(180.0, 620.0), max: Vec2::new(300.0, 640.0), kind: RectKind::Pad },
+            // P2 landing pad (centered on spawn x=1040)
+            Rect { min: Vec2::new(980.0, 620.0), max: Vec2::new(1100.0, 640.0), kind: RectKind::Pad },
         ];
         Self {
             size,
@@ -929,9 +931,8 @@ mod tests {
 
     #[test]
     fn soft_upright_touchdown_on_pad_lands() {
-        // Pad in default level is at (560..720, 620..640). Park just above and drift down slowly.
         let mut world = world_with_ship(
-            Vec2::new(640.0, 600.0),
+            Vec2::new(240.0, 600.0),
             Vec2::new(0.0, 30.0),
             -std::f32::consts::FRAC_PI_2,
         );
@@ -989,7 +990,7 @@ mod tests {
         // Touch down with a slight clockwise tilt (within tolerance so we land).
         let tilted = -std::f32::consts::FRAC_PI_2 + 0.25;
         let mut world = world_with_ship(
-            Vec2::new(640.0, 600.0),
+            Vec2::new(240.0, 600.0),
             Vec2::new(0.0, 30.0),
             tilted,
         );
@@ -1020,7 +1021,7 @@ mod tests {
         // settling, then chip damage drains shields to zero.
         let tilted = -std::f32::consts::FRAC_PI_2 + 1.2; // ~69° off upright
         let mut world = world_with_ship(
-            Vec2::new(640.0, 600.0),
+            Vec2::new(240.0, 600.0),
             Vec2::new(0.0, 30.0),
             tilted,
         );
@@ -1057,7 +1058,7 @@ mod tests {
         // timeline.
         let setup = || {
             let mut w = world_with_ship(
-                Vec2::new(640.0, 600.0),
+                Vec2::new(240.0, 600.0),
                 Vec2::new(0.0, 30.0),
                 -std::f32::consts::FRAC_PI_2 + 1.2,
             );
@@ -1088,7 +1089,7 @@ mod tests {
     fn landed_ship_can_still_lift_off() {
         // First land soft and upright.
         let mut world = world_with_ship(
-            Vec2::new(640.0, 600.0),
+            Vec2::new(240.0, 600.0),
             Vec2::new(0.0, 30.0),
             UPRIGHT_ANGLE,
         );
@@ -1111,7 +1112,7 @@ mod tests {
     #[test]
     fn pad_refuels_and_recharges_while_landed() {
         let mut world = world_with_ship(
-            Vec2::new(640.0, 600.0),
+            Vec2::new(240.0, 600.0),
             Vec2::new(0.0, 30.0),
             -std::f32::consts::FRAC_PI_2,
         );
