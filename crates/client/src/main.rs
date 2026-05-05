@@ -113,12 +113,13 @@ fn draw_bullets(world: &World) {
 
 fn draw_particles(world: &World) {
     for p in &world.particles {
-        let frac = (p.ttl / p.max_ttl).clamp(0.0, 1.0);
+        let frac_alpha = (p.ttl / p.max_ttl).clamp(0.5, 1.0);
+        let frac_size = (p.ttl / p.max_ttl).clamp(0.75, 1.0);
         let (color, radius) = match p.kind {
-            ParticleKind::Thrust => (Color::new(0.5, 0.85, 1.0, frac), 1.6),
-            ParticleKind::Explosion => (Color::new(1.0, 0.7, 0.3, frac), 2.0),
+            ParticleKind::Thrust => (Color::new(0.5, 0.85, 1.0, frac_alpha), 1.6),
+            ParticleKind::Explosion => (Color::new(1.0, 0.7, 0.3, frac_alpha), 2.0),
         };
-        draw_circle(p.pos.x, p.pos.y, radius, color);
+        draw_circle(p.pos.x, p.pos.y, radius * frac_size, color);
     }
 }
 

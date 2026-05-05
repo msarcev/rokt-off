@@ -64,19 +64,19 @@ pub const BULLET_DAMAGE: f32 = 20.0;
 pub const RESPAWN_TICKS: u32 = 60;
 
 pub const MAX_PARTICLES: usize = 512;
-pub const EXPLOSION_PARTICLE_COUNT: usize = 200;
+pub const EXPLOSION_PARTICLE_COUNT: usize = 350;
 pub const PARTICLE_SPEED_MIN: f32 = 80.0;
 pub const PARTICLE_SPEED_MAX: f32 = 240.0;
-pub const PARTICLE_TTL_MIN: f32 = 0.4;
-pub const PARTICLE_TTL_MAX: f32 = 1.2;
+pub const PARTICLE_TTL_MIN: f32 = 1.5;
+pub const PARTICLE_TTL_MAX: f32 = 2.0;
 
-pub const THRUST_PARTICLES_PER_TICK: u32 = 2;
+pub const THRUST_PARTICLES_PER_TICK: u32 = 4;
 pub const THRUST_PARTICLE_SPEED_MIN: f32 = 140.0;
 pub const THRUST_PARTICLE_SPEED_MAX: f32 = 220.0;
-pub const THRUST_PARTICLE_TTL_MIN: f32 = 0.18;
-pub const THRUST_PARTICLE_TTL_MAX: f32 = 0.40;
-pub const THRUST_PARTICLE_SPREAD: f32 = 0.35;
-pub const THRUST_EMIT_OFFSET: f32 = 0.85;
+pub const THRUST_PARTICLE_TTL_MIN: f32 = 0.30;
+pub const THRUST_PARTICLE_TTL_MAX: f32 = 0.50;
+pub const THRUST_PARTICLE_SPREAD: f32 = 0.3;
+pub const THRUST_EMIT_OFFSET: f32 = 0.9;
 
 pub const PARTICLE_RADIUS: f32 = 2.5;
 pub const PARTICLE_HIT_DAMAGE_THRUST: f32 = 0.25;
@@ -401,7 +401,7 @@ impl World {
             p.vel += gravity * DT;
             p.ttl -= DT;
         }
-        resolve_particles(&mut self.particles, &mut self.ships);
+        resolve_particles(&mut self.particles, &mut self.ships, &self.level.rects);
         self.particles.retain(|p| p.ttl > 0.0);
 
         self.tick += 1;
@@ -460,11 +460,15 @@ fn spawn_thrust(particles: &mut Vec<Particle>, rng: &mut Rng, ship: &Ship, owner
     }
 }
 
-fn resolve_particles(particles: &mut [Particle], ships: &mut [Ship; 2]) {
+fn resolve_particles(particles: &mut [Particle], ships: &mut [Ship; 2], rects: &[Rect]) {
     let r = SHIP_RADIUS + PARTICLE_RADIUS;
     let r_sq = r * r;
     for p in particles.iter_mut() {
         if p.ttl <= 0.0 {
+            continue;
+        }
+        if rects.iter().any(|rect| point_in_rect(p.pos, rect)) {
+            p.ttl = 0.0;
             continue;
         }
         for (idx, ship) in ships.iter_mut().enumerate() {
@@ -1138,11 +1142,15 @@ mod tests {
 
     #[test]
     fn ship_death_spawns_explosion_and_particles_expire() {
+        // Gentle floor-kill: shields nearly empty, low velocity. A 1500 px/s
+        // slam would yank the explosion's base velocity straight into the
+        // floor and wall-collision would eat every particle on tick 1.
         let mut world = world_with_ship(
-            Vec2::new(300.0, 685.0),
-            Vec2::new(0.0, 1500.0),
+            Vec2::new(300.0, 690.0),
+            Vec2::new(0.0, 100.0),
             0.0,
         );
+        world.ships[0].shields = 0.5;
         world.tick([Input::empty(), Input::empty()]);
         assert!(!world.ships[0].alive);
         assert_eq!(world.particles.len(), EXPLOSION_PARTICLE_COUNT);
@@ -1254,6 +1262,25 @@ mod tests {
             world.ships[1].shields < init,
             "P2 should take shrapnel damage, got {}",
             world.ships[1].shields
+        );
+    }
+
+    #[test]
+    fn particles_die_when_entering_a_wall() {
+        let mut world = world_with_ship(Vec2::new(-5000.0, -5000.0), Vec2::ZERO, 0.0);
+        world.ships[0].alive = false;
+        world.particles.push(Particle {
+            pos: Vec2::new(400.0, 698.0),
+            vel: Vec2::new(0.0, 200.0),
+            ttl: 1.0,
+            max_ttl: 1.0,
+            owner: 0,
+            kind: ParticleKind::Thrust,
+        });
+        world.tick([Input::empty(), Input::empty()]);
+        assert!(
+            world.particles.is_empty(),
+            "particle entering the floor should despawn"
         );
     }
 
