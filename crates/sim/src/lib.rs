@@ -21,8 +21,9 @@ pub const FUEL_MAX: f32 = 1000.0;
 pub const FUEL_BURN_PER_SEC: f32 = 80.0;
 pub const SHIELD_MAX: f32 = 100.0;
 
-pub const IMPACT_DAMAGE_SCALE: f32 = 0.25;
+pub const IMPACT_DAMAGE_SCALE: f32 = 0.0005;
 pub const SCRAPE_THRESHOLD: f32 = 50.0;
+pub const EXPLOSION_REF_SPEED: f32 = 350.0;
 pub const COLLISION_BOUNCE: f32 = 0.3;
 pub const FUEL_REFILL_PER_SEC: f32 = 600.0;
 pub const SHIELD_RECHARGE_PER_SEC: f32 = 60.0;
@@ -33,6 +34,7 @@ pub const SETTLED_DELAY_TICKS: u32 = 45;
 pub const LIFTOFF_VELOCITY: f32 = 30.0;
 pub const BOUNCE_RESTITUTION: f32 = 0.4;
 pub const BOUNCE_FLOOR: f32 = 10.0;
+pub const PAD_SLAM_SPEED: f32 = 200.0;
 pub const PAD_LATERAL_FRICTION_FLOOR: f32 = 80.0;
 pub const PAD_LATERAL_RESTITUTION: f32 = 0.25;
 // Tilt threshold past which the ship tips over instead of settling.
@@ -250,6 +252,13 @@ pub struct Particle {
     pub kind: ParticleKind,
 }
 
+#[derive(Copy, Clone, Debug)]
+struct WallImpact {
+    pos: Vec2,
+    normal: Vec2,
+    speed: f32,
+}
+
 #[derive(Clone, Debug)]
 pub struct World {
     pub level: Level,
@@ -284,6 +293,7 @@ impl World {
     pub fn tick(&mut self, inputs: [Input; 2]) {
         let gravity = Vec2::new(0.0, self.level.gravity);
         let was_alive = [self.ships[0].alive, self.ships[1].alive];
+        let mut wall_impact: [Option<WallImpact>; 2] = [None, None];
         let mut thrusted = [false; 2];
         for (idx, (ship, input)) in self.ships.iter_mut().zip(inputs.iter()).enumerate() {
             ship.fire_cooldown = (ship.fire_cooldown - DT).max(0.0);
@@ -293,7 +303,7 @@ impl World {
             let was_landed = ship.landed;
             ship.landed = false;
             thrusted[idx] = step_ship(ship, *input, gravity, was_landed);
-            resolve_ship_rects(ship, &self.level.rects);
+            resolve_ship_rects(ship, &self.level.rects, &mut wall_impact[idx]);
 
             // Stay-landed sticky: pivot rotation can briefly lift the
             // contact vertex; treat the ship as still landed unless it's
@@ -378,6 +388,7 @@ impl World {
                     ship.pos,
                     ship.vel,
                     idx as u8,
+                    wall_impact[idx],
                 );
             }
         }
@@ -415,18 +426,35 @@ impl World {
 fn spawn_explosion(
     particles: &mut Vec<Particle>,
     rng: &mut Rng,
-    pos: Vec2,
-    base_vel: Vec2,
+    ship_pos: Vec2,
+    ship_vel: Vec2,
     owner: u8,
+    impact: Option<WallImpact>,
 ) {
-    use std::f32::consts::TAU;
-    for _ in 0..EXPLOSION_PARTICLE_COUNT {
-        let angle = rng.next_f32() * TAU;
-        let speed = rng.range(PARTICLE_SPEED_MIN, PARTICLE_SPEED_MAX);
-        let ttl = rng.range(PARTICLE_TTL_MIN, PARTICLE_TTL_MAX);
+    use std::f32::consts::{PI, TAU};
+
+    let (origin, base_vel, dir_bias, intensity) = match impact {
+        Some(WallImpact { pos, normal, speed }) => {
+            let i = (speed / EXPLOSION_REF_SPEED).clamp(0.6, 2.2);
+            (pos, Vec2::ZERO, Some(normal), i)
+        }
+        None => (ship_pos, ship_vel, None, 1.0),
+    };
+
+    let count = (EXPLOSION_PARTICLE_COUNT as f32 * intensity) as usize;
+    let speed_scale = intensity;
+    let ttl_scale = intensity.sqrt();
+
+    for _ in 0..count {
+        let angle = match dir_bias {
+            Some(n) => n.y.atan2(n.x) + (rng.next_f32() - 0.5) * PI,
+            None => rng.next_f32() * TAU,
+        };
         let dir = Vec2::new(angle.cos(), angle.sin());
+        let speed = rng.range(PARTICLE_SPEED_MIN, PARTICLE_SPEED_MAX) * speed_scale;
+        let ttl = rng.range(PARTICLE_TTL_MIN, PARTICLE_TTL_MAX) * ttl_scale;
         let p = Particle {
-            pos,
+            pos: origin,
             vel: base_vel + dir * speed,
             ttl,
             max_ttl: ttl,
@@ -527,7 +555,8 @@ fn resolve_ship_ship(ships: &mut [Ship; 2]) {
     b.vel += normal * j;
 
     let chip = if v_rel > BOUNCE_FLOOR { CHIP_DAMAGE_PER_BOUNCE } else { 0.0 };
-    let extra = (v_rel - SCRAPE_THRESHOLD).max(0.0) * IMPACT_DAMAGE_SCALE;
+    let over = (v_rel - SCRAPE_THRESHOLD).max(0.0);
+    let extra = over * over * IMPACT_DAMAGE_SCALE;
     let total = (chip + extra) * SHIP_RAM_DAMAGE_SCALE;
     if total > 0.0 {
         for s in [a, b] {
@@ -628,22 +657,22 @@ fn spawn_bullet(bullets: &mut Vec<Bullet>, ship: &Ship, owner: u8) {
 /// Resolve ship vs level rects. Walls use the ship's circle hull; pads use
 /// the rotated triangle's lowest vertex so contact behaviour matches what
 /// the player sees. Mutates `ship` in place.
-fn resolve_ship_rects(ship: &mut Ship, rects: &[Rect]) {
+fn resolve_ship_rects(ship: &mut Ship, rects: &[Rect], impact: &mut Option<WallImpact>) {
     for rect in rects {
         match rect.kind {
-            RectKind::Pad => resolve_ship_pad(ship, rect),
-            RectKind::Wall => resolve_ship_wall(ship, rect),
+            RectKind::Pad => resolve_ship_pad(ship, rect, impact),
+            RectKind::Wall => resolve_ship_wall(ship, rect, impact),
         }
     }
 }
 
-fn resolve_ship_pad(ship: &mut Ship, pad: &Rect) {
+fn resolve_ship_pad(ship: &mut Ship, pad: &Rect, impact: &mut Option<WallImpact>) {
     let pad_top = pad.min.y;
 
     // CoM at or past the pad surface → treat as solid rect (side/bottom
     // collision). Top-landing only applies when approaching from above.
     if ship.pos.y >= pad_top {
-        resolve_ship_wall(ship, pad);
+        resolve_ship_wall(ship, pad, impact);
         return;
     }
 
@@ -669,6 +698,25 @@ fn resolve_ship_pad(ship: &mut Ship, pad: &Rect) {
     let r_x = lowest.x - ship.pos.x;
     let v_at_vertex_y = ship.vel.y + ship.angular_vel * r_x;
     let impact_speed = v_at_vertex_y.max(0.0);
+
+    let ship_speed = ship.vel.length();
+    if v_at_vertex_y > PAD_SLAM_SPEED || ship_speed > PAD_SLAM_SPEED {
+        let damage_speed = ship_speed.max(v_at_vertex_y);
+        let over = (damage_speed - SCRAPE_THRESHOLD).max(0.0);
+        let extra = over * over * IMPACT_DAMAGE_SCALE + CHIP_DAMAGE_PER_BOUNCE;
+        ship.shields = (ship.shields - extra).max(0.0);
+        *impact = Some(WallImpact {
+            pos: Vec2::new(lowest.x, pad_top),
+            normal: Vec2::new(0.0, -1.0),
+            speed: damage_speed,
+        });
+        if ship.shields <= 0.0 {
+            ship.alive = false;
+            return;
+        }
+        ship.vel.y = -BOUNCE_RESTITUTION * v_at_vertex_y;
+        return;
+    }
 
     let is_bounce = v_at_vertex_y > BOUNCE_FLOOR;
     if is_bounce {
@@ -701,7 +749,8 @@ fn resolve_ship_pad(ship: &mut Ship, pad: &Rect) {
         }
     }
 
-    let extra = (impact_speed - SCRAPE_THRESHOLD).max(0.0) * IMPACT_DAMAGE_SCALE;
+    let over = (impact_speed - SCRAPE_THRESHOLD).max(0.0);
+    let extra = over * over * IMPACT_DAMAGE_SCALE;
     if extra > 0.0 {
         ship.shields = (ship.shields - extra).max(0.0);
         if ship.shields <= 0.0 {
@@ -747,7 +796,7 @@ fn resolve_ship_pad(ship: &mut Ship, pad: &Rect) {
     ship.landed = true;
 }
 
-fn resolve_ship_wall(ship: &mut Ship, rect: &Rect) {
+fn resolve_ship_wall(ship: &mut Ship, rect: &Rect, impact: &mut Option<WallImpact>) {
     let closest = ship.pos.clamp(rect.min, rect.max);
     let delta = ship.pos - closest;
     let dist_sq = delta.length_squared();
@@ -799,6 +848,12 @@ fn resolve_ship_wall(ship: &mut Ship, rect: &Rect) {
     let v_along_normal = ship.vel.dot(normal);
     let impact_speed = (-v_along_normal).max(0.0);
 
+    *impact = Some(WallImpact {
+        pos: ship.pos - normal * SHIP_RADIUS,
+        normal,
+        speed: impact_speed,
+    });
+
     // Chip on rebound only — sliding/resting contacts don't chip.
     if impact_speed > BOUNCE_FLOOR {
         ship.shields = (ship.shields - CHIP_DAMAGE_PER_BOUNCE).max(0.0);
@@ -807,7 +862,8 @@ fn resolve_ship_wall(ship: &mut Ship, rect: &Rect) {
             return;
         }
     }
-    let extra = (impact_speed - SCRAPE_THRESHOLD).max(0.0) * IMPACT_DAMAGE_SCALE;
+    let over = (impact_speed - SCRAPE_THRESHOLD).max(0.0);
+    let extra = over * over * IMPACT_DAMAGE_SCALE;
     if extra > 0.0 {
         ship.shields = (ship.shields - extra).max(0.0);
         if ship.shields <= 0.0 {
