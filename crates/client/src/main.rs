@@ -1,5 +1,9 @@
+use std::fs::{File, OpenOptions};
+use std::io::{Read, Write};
+use std::path::PathBuf;
+
 use macroquad::prelude::*;
-use sim::{Input, Level, ParticleKind, RectKind, World, FUEL_MAX, SHIELD_MAX};
+use sim::{Input, Level, ParticleKind, RectKind, World, DEFAULT_SEED, FUEL_MAX, SHIELD_MAX};
 
 const SHIP_SIZE: f32 = 14.0;
 const SHIP_COLORS: [Color; 2] = [SKYBLUE, ORANGE];
@@ -16,15 +20,34 @@ fn window_conf() -> Conf {
 
 #[macroquad::main(window_conf)]
 async fn main() {
-    let level = Level::default();
-    let mut world = World::new(level);
-    let mut accumulator = 0.0_f32;
+    let replay_enabled = std::env::args().any(|a| a == "--replay");
+    let mut replay = if replay_enabled { Some(Replay::open()) } else { None };
 
+    let seed = replay.as_ref().map(|w| w.seed).unwrap_or(DEFAULT_SEED);
+    let mut world = World::with_seed(Level::default(), seed);
+
+    if let Some(w) = &replay {
+        for inputs in &w.recorded {
+            world.tick(*inputs);
+        }
+        println!("[replay] replayed {} ticks from {}", w.recorded.len(), w.path.display());
+    }
+
+    let mut accumulator = 0.0_f32;
     loop {
+        if replay.is_some() && is_key_pressed(KeyCode::R) {
+            replay.as_mut().unwrap().reset();
+            world = World::with_seed(Level::default(), DEFAULT_SEED);
+            accumulator = 0.0;
+        }
+
         accumulator += get_frame_time();
         while accumulator >= sim::DT {
             let inputs = [poll_input_p1(), poll_input_p2()];
             world.tick(inputs);
+            if let Some(w) = &mut replay {
+                w.record(inputs);
+            }
             accumulator -= sim::DT;
         }
 
@@ -41,6 +64,76 @@ async fn main() {
 
         next_frame().await
     }
+}
+
+struct Replay {
+    path: PathBuf,
+    file: File,
+    seed: u64,
+    recorded: Vec<[Input; 2]>,
+}
+
+impl Replay {
+    fn open() -> Self {
+        let path = replay_path();
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+
+        let (seed, recorded) = match File::open(&path) {
+            Ok(mut f) => {
+                let mut buf = Vec::new();
+                f.read_to_end(&mut buf).expect("read dev.bin");
+                if buf.len() >= 8 {
+                    let seed = u64::from_le_bytes(buf[0..8].try_into().unwrap());
+                    let recorded = buf[8..]
+                        .chunks_exact(2)
+                        .map(|c| [Input::from_bits_truncate(c[0]), Input::from_bits_truncate(c[1])])
+                        .collect();
+                    (seed, recorded)
+                } else {
+                    (DEFAULT_SEED, Vec::new())
+                }
+            }
+            Err(_) => (DEFAULT_SEED, Vec::new()),
+        };
+
+        if recorded.is_empty() {
+            let mut f = File::create(&path).expect("create dev.bin");
+            f.write_all(&seed.to_le_bytes()).expect("write seed");
+        }
+
+        let file = OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .expect("open dev.bin for append");
+
+        Self { path, file, seed, recorded }
+    }
+
+    fn record(&mut self, inputs: [Input; 2]) {
+        let _ = self.file.write_all(&[inputs[0].bits(), inputs[1].bits()]);
+    }
+
+    fn reset(&mut self) {
+        let mut f = File::create(&self.path).expect("truncate dev.bin");
+        f.write_all(&DEFAULT_SEED.to_le_bytes()).expect("write seed");
+        self.file = OpenOptions::new()
+            .append(true)
+            .open(&self.path)
+            .expect("reopen dev.bin");
+        self.seed = DEFAULT_SEED;
+        self.recorded.clear();
+        println!("[replay] reset");
+    }
+}
+
+fn replay_path() -> PathBuf {
+    let exe = std::env::current_exe().expect("current_exe");
+    exe.parent()
+        .and_then(|p| p.parent())
+        .map(|target| target.join("dev.bin"))
+        .unwrap_or_else(|| PathBuf::from("target/dev.bin"))
 }
 
 fn poll_input_p1() -> Input {

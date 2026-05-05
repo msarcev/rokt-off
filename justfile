@@ -4,6 +4,9 @@ default:
 run-native:
     cargo run -p client --release
 
+watch:
+    cargo watch -x "run -p client --release -- --replay"
+
 build-wasm:
     cargo build -p client --release --target wasm32-unknown-unknown
     @cp target/wasm32-unknown-unknown/release/head-on-client.wasm web/head-on-client.wasm
