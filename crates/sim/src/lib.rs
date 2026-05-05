@@ -51,6 +51,7 @@ pub const TIPPED_SETTLE_SNAP_TOL: f32 = 0.3;
 // suppresses the tipped-settle pivot so A/D recovery isn't fought.
 pub const TIPPED_SETTLE_AV_THRESHOLD: f32 = 0.5;
 pub const CHIP_DAMAGE_PER_BOUNCE: f32 = 1.5;
+pub const SHIP_RAM_DAMAGE_SCALE: f32 = 1.35;
 pub const WALL_CONTACT_DPS: f32 = 30.0;
 pub const TIP_DMG_BASE: f32 = 2.5;
 pub const TIP_DMG_RAMP: f32 = 0.2;
@@ -525,7 +526,7 @@ fn resolve_ship_ship(ships: &mut [Ship; 2]) {
 
     let chip = if v_rel > BOUNCE_FLOOR { CHIP_DAMAGE_PER_BOUNCE } else { 0.0 };
     let extra = (v_rel - SCRAPE_THRESHOLD).max(0.0) * IMPACT_DAMAGE_SCALE;
-    let total = chip + extra;
+    let total = (chip + extra) * SHIP_RAM_DAMAGE_SCALE;
     if total > 0.0 {
         for s in [a, b] {
             s.shields = (s.shields - total).max(0.0);
