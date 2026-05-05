@@ -343,6 +343,9 @@ impl World {
             }
         }
 
+        // Ships are solid: separate any pair that overlaps and bounce them apart.
+        resolve_ship_ship(&mut self.ships);
+
         // Emit thrust particles for ships that fired their main engine.
         for idx in 0..self.ships.len() {
             if thrusted[idx] {
@@ -490,6 +493,100 @@ fn resolve_particles(particles: &mut [Particle], ships: &mut [Ship; 2], rects: &
             }
         }
     }
+}
+
+fn resolve_ship_ship(ships: &mut [Ship; 2]) {
+    let [a, b] = ships;
+    if !a.alive || !b.alive {
+        return;
+    }
+
+    // Broad-phase: bounding circle uses the circumradius (= SHIP_SIZE) so
+    // any triangle-vs-triangle overlap is guaranteed to also overlap here.
+    let a_to_b = b.pos - a.pos;
+    let r = SHIP_SIZE * 2.0;
+    if a_to_b.length_squared() >= r * r {
+        return;
+    }
+
+    // Narrow-phase: SAT on the two triangles.
+    let tri_a = a.triangle_vertices();
+    let tri_b = b.triangle_vertices();
+    let Some((normal, depth)) = sat_triangles(&tri_a, &tri_b, a_to_b) else {
+        return;
+    };
+
+    // Push apart equally — equal masses, half each.
+    a.pos -= normal * (depth * 0.5);
+    b.pos += normal * (depth * 0.5);
+
+    // Approaching speed along the contact normal (a → b).
+    let v_rel = (a.vel - b.vel).dot(normal);
+    if v_rel <= 0.0 {
+        return;
+    }
+
+    // Equal-mass impulse with restitution: j = (1+e)·v_rel / 2.
+    let j = (1.0 + COLLISION_BOUNCE) * v_rel * 0.5;
+    a.vel -= normal * j;
+    b.vel += normal * j;
+
+    // Chip on rebound, scrape damage on hard impacts. Both ships take both.
+    let chip = if v_rel > BOUNCE_FLOOR { CHIP_DAMAGE_PER_BOUNCE } else { 0.0 };
+    let extra = (v_rel - SCRAPE_THRESHOLD).max(0.0) * IMPACT_DAMAGE_SCALE;
+    let total = chip + extra;
+    if total > 0.0 {
+        for s in [a, b] {
+            s.shields = (s.shields - total).max(0.0);
+            if s.shields <= 0.0 {
+                s.alive = false;
+            }
+        }
+    }
+}
+
+/// Separating Axis Theorem for two triangles. Returns the minimum
+/// translation vector (oriented from `a` toward `b` via `a_to_b`) and its
+/// magnitude. `None` means the triangles are separated.
+fn sat_triangles(a: &[Vec2; 3], b: &[Vec2; 3], a_to_b: Vec2) -> Option<(Vec2, f32)> {
+    let mut min_depth = f32::INFINITY;
+    let mut min_axis = Vec2::ZERO;
+
+    for tri in [a, b] {
+        for i in 0..3 {
+            let edge = tri[(i + 1) % 3] - tri[i];
+            // Edge normal (perpendicular). Direction is arbitrary at this
+            // point — we orient the final axis against `a_to_b` below.
+            let n = Vec2::new(-edge.y, edge.x);
+            let len_sq = n.length_squared();
+            if len_sq <= f32::EPSILON {
+                continue;
+            }
+            let axis = n / len_sq.sqrt();
+
+            let (a_min, a_max) = project_triangle(a, axis);
+            let (b_min, b_max) = project_triangle(b, axis);
+
+            if a_max < b_min || b_max < a_min {
+                return None;
+            }
+            let overlap = a_max.min(b_max) - a_min.max(b_min);
+            if overlap < min_depth {
+                min_depth = overlap;
+                min_axis = axis;
+            }
+        }
+    }
+
+    let oriented = if a_to_b.dot(min_axis) >= 0.0 { min_axis } else { -min_axis };
+    Some((oriented, min_depth))
+}
+
+fn project_triangle(tri: &[Vec2; 3], axis: Vec2) -> (f32, f32) {
+    let p0 = tri[0].dot(axis);
+    let p1 = tri[1].dot(axis);
+    let p2 = tri[2].dot(axis);
+    (p0.min(p1).min(p2), p0.max(p1).max(p2))
 }
 
 fn resolve_bullets(bullets: &mut [Bullet], ships: &mut [Ship; 2], rects: &[Rect]) {
@@ -1345,6 +1442,71 @@ mod tests {
             assert_eq!(ba.ttl, bb.ttl);
         }
         assert_eq!(a.particles.len(), b.particles.len());
+    }
+
+    #[test]
+    fn ships_cannot_overlap() {
+        // Park P1 and P2 on a collision course and verify their *triangles*
+        // never overlap after the resolution step. Centre distance isn't the
+        // right invariant under SAT — the minimum-translation axis can be
+        // sideways, so centres stay close while the visible shapes clear.
+        let mut world = World::new(Level::default());
+        world.ships[0].pos = Vec2::new(400.0, 360.0);
+        world.ships[0].vel = Vec2::new(80.0, 0.0);
+        world.ships[0].angle = 0.0;
+        world.ships[1].pos = Vec2::new(400.0 + SHIP_SIZE * 1.5, 360.0);
+        world.ships[1].vel = Vec2::new(-80.0, 0.0);
+        world.ships[1].angle = std::f32::consts::PI;
+        for _ in 0..30 {
+            world.tick([Input::empty(), Input::empty()]);
+            let tri0 = world.ships[0].triangle_vertices();
+            let tri1 = world.ships[1].triangle_vertices();
+            let a_to_b = world.ships[1].pos - world.ships[0].pos;
+            let depth = sat_triangles(&tri0, &tri1, a_to_b)
+                .map(|(_, d)| d)
+                .unwrap_or(0.0);
+            assert!(depth < 1e-3, "ship triangles overlap by {depth}");
+        }
+    }
+
+    #[test]
+    fn nose_does_not_penetrate_back_edge() {
+        // Park victim stationary, attacker just behind in the same heading,
+        // ramming forward. The previous circle-circle test let the nose poke
+        // into the victim by ~4 units; SAT must keep them visually clear.
+        let mut world = World::new(Level::default());
+        world.ships[0].pos = Vec2::new(400.0, 360.0);
+        world.ships[0].vel = Vec2::new(200.0, 0.0);
+        world.ships[0].angle = 0.0;
+        world.ships[1].pos = Vec2::new(420.0, 360.0);
+        world.ships[1].vel = Vec2::ZERO;
+        world.ships[1].angle = 0.0;
+
+        world.tick([Input::empty(), Input::empty()]);
+
+        let nose = world.ships[0].triangle_vertices()[0];
+        let back_x = world.ships[1].pos.x - 0.7 * SHIP_SIZE;
+        assert!(
+            nose.x <= back_x + 1e-3,
+            "attacker nose at {} crossed victim back edge at {}",
+            nose.x,
+            back_x,
+        );
+    }
+
+    #[test]
+    fn ship_ramming_damages_both() {
+        // Head-on closing fast: both ships should chip and take scrape damage.
+        let mut world = World::new(Level::default());
+        world.ships[0].pos = Vec2::new(400.0, 360.0);
+        world.ships[0].vel = Vec2::new(150.0, 0.0);
+        world.ships[0].angle = 0.0;
+        world.ships[1].pos = Vec2::new(400.0 + SHIP_RADIUS * 2.0 + 0.5, 360.0);
+        world.ships[1].vel = Vec2::new(-150.0, 0.0);
+        world.ships[1].angle = std::f32::consts::PI;
+        world.tick([Input::empty(), Input::empty()]);
+        assert!(world.ships[0].shields < SHIELD_MAX);
+        assert!(world.ships[1].shields < SHIELD_MAX);
     }
 
     #[test]
