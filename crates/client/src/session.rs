@@ -248,7 +248,8 @@ impl P2pRunner {
     fn handle_request(world: &mut World, req: GgrsRequest<GgrsConfig>) {
         match req {
             GgrsRequest::SaveGameState { cell, frame } => {
-                cell.save(frame, Some(world.clone()), None);
+                let checksum = checksum_world(world);
+                cell.save(frame, Some(world.clone()), Some(checksum));
             }
             GgrsRequest::LoadGameState { cell, .. } => {
                 *world = cell.load().expect("loaded state present");
@@ -283,9 +284,13 @@ impl Session for P2pRunner {
     }
 }
 
-/// Cheap deterministic hash of the world for SyncTest checksums. Enough to
-/// detect divergence; not cryptographic. Hashes the bitwise representation
-/// of every f32 we care about so NaN/-0.0 differences would also show up.
+/// Cheap deterministic hash of the world for GGRS save-state checksums.
+/// Used by both SyncTest (in-process) and P2P (cross-peer): a mismatch
+/// between the two peers' checksums on the same frame surfaces as a
+/// `GgrsEvent::DesyncDetected`. Hashes the bitwise representation of every
+/// f32 we care about so NaN / -0.0 differences would also show up.
+/// Portable across two machines running the same Rust toolchain because
+/// `DefaultHasher` (SipHasher13 with fixed seed) is itself deterministic.
 fn checksum_world(w: &World) -> u128 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
