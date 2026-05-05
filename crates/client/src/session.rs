@@ -222,10 +222,11 @@ impl P2pRunner {
             return;
         }
 
-        // Local input mapping: handle 0 → P1 keys, handle 1 → P2 keys.
-        // After matchbox player-id sort, exactly one of these is local.
+        // Net play: each peer has their own keyboard, so accept either keyset
+        // (WASD+F or arrows+RightCtrl) regardless of which handle they got
+        // assigned by matchbox's player-id sort.
+        let i = poll_input_p1() | poll_input_p2();
         for &h in local_handles {
-            let i = if h == 0 { poll_input_p1() } else { poll_input_p2() };
             if let Err(e) = session.add_local_input(h, NetInput::from(i)) {
                 eprintln!("[net] add_local_input handle={h}: {e:?}");
             }
