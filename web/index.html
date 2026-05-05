@@ -17,7 +17,38 @@
 </head>
 <body>
 <canvas id="glcanvas" tabindex='1'></canvas>
-<script src="https://not-fl3.github.io/miniquad-samples/mq_js_bundle.js"></script>
-<script>load("head-on-client.wasm");</script>
+<script src="./gl.js"></script>
+<script>
+(async () => {
+    // Bridges that wasm-bindgen-cli renames from `__wbindgen_placeholder__`
+    // into `./head_on_client_bg.js`. Only two survive DCE on this build —
+    // copied from the wasm-bindgen-emitted JS we discard otherwise.
+    importObject["./head_on_client_bg.js"] = {
+        __wbg___wbindgen_throw_9c75d47bf9e7731e(ptr, len) {
+            const bytes = new Uint8Array(wasm_memory.buffer, ptr, len);
+            throw new Error(new TextDecoder().decode(bytes));
+        },
+        __wbindgen_init_externref_table() {
+            const table = wasm_exports.__wbindgen_externrefs;
+            const offset = table.grow(4);
+            table.set(0, undefined);
+            table.set(offset + 0, undefined);
+            table.set(offset + 1, null);
+            table.set(offset + 2, true);
+            table.set(offset + 3, false);
+        },
+    };
+
+    register_plugins(plugins);
+    const { instance } = await WebAssembly.instantiateStreaming(
+        fetch('./pkg/head_on_client_bg.wasm'),
+        importObject,
+    );
+    wasm_memory = instance.exports.memory;
+    wasm_exports = instance.exports;
+    init_plugins(plugins);
+    instance.exports.wasm_start();
+})().catch(err => console.error('[head-on] init failed:', err));
+</script>
 </body>
 </html>
