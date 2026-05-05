@@ -8,11 +8,16 @@ use sim::{Input, Level, ParticleKind, RectKind, World, DEFAULT_SEED, FUEL_MAX, S
 const SHIP_SIZE: f32 = 14.0;
 const SHIP_COLORS: [Color; 2] = [SKYBLUE, ORANGE];
 
+const PLAY_W: f32 = 1280.0;
+const PLAY_H: f32 = 720.0;
+const HUD_H: f32 = 96.0;
+const TOTAL_H: f32 = PLAY_H + HUD_H;
+
 fn window_conf() -> Conf {
     Conf {
         window_title: "head-on-rs".to_owned(),
-        window_width: 1280,
-        window_height: 720,
+        window_width: PLAY_W as i32,
+        window_height: TOTAL_H as i32,
         window_resizable: true,
         high_dpi: true,
         ..Default::default()
@@ -60,21 +65,25 @@ async fn main() {
 
         let sw = screen_width();
         let sh = screen_height();
-        let scale = (sw / 1280.0).min(sh / 720.0);
-        let view_w = 1280.0 * scale;
-        let view_h = 720.0 * scale;
-        let off_x = ((sw - view_w) * 0.5).floor();
-        let off_y = ((sh - view_h) * 0.5).floor();
-
         let dpi = screen_dpi_scale();
+
+        let hud_h_px = (sh * HUD_H / TOTAL_H).floor();
+        let avail_h = sh - hud_h_px;
+        let play_scale = (sw / PLAY_W).min(avail_h / PLAY_H);
+        let play_w_px = PLAY_W * play_scale;
+        let play_h_px = PLAY_H * play_scale;
+        let play_off_x = ((sw - play_w_px) * 0.5).floor();
+        let play_off_y = ((avail_h - play_h_px) * 0.5).floor();
+
+        let vp_y = sh - play_off_y - play_h_px;
         let cam = Camera2D {
-            target: vec2(640.0, 360.0),
-            zoom: vec2(2.0 / 1280.0, 2.0 / 720.0),
+            target: vec2(PLAY_W / 2.0, PLAY_H / 2.0),
+            zoom: vec2(2.0 / PLAY_W, 2.0 / PLAY_H),
             viewport: Some((
-                (off_x * dpi) as i32,
-                (off_y * dpi) as i32,
-                (view_w * dpi) as i32,
-                (view_h * dpi) as i32,
+                (play_off_x * dpi) as i32,
+                (vp_y * dpi) as i32,
+                (play_w_px * dpi) as i32,
+                (play_h_px * dpi) as i32,
             )),
             ..Default::default()
         };
@@ -91,7 +100,7 @@ async fn main() {
         draw_bullets(&world);
         draw_particles(&world);
         set_default_camera();
-        draw_hud(&world, off_x, off_y, view_w);
+        draw_hud(&world, 0.0, sh - hud_h_px, sw, hud_h_px, hud_h_px / HUD_H);
 
         next_frame().await
     }
@@ -247,31 +256,49 @@ fn draw_particles(world: &World) {
     }
 }
 
-fn draw_hud(world: &World, vx: f32, vy: f32, vw: f32) {
-    const BAR_W: f32 = 180.0;
-    const BAR_H: f32 = 10.0;
-    const PAD: f32 = 12.0;
+fn draw_hud(world: &World, x: f32, y: f32, w: f32, h: f32, s: f32) {
+    let paper = Color::from_rgba(238, 232, 213, 255);
+    let ink = Color::from_rgba(50, 45, 60, 230);
+    let ink_soft = Color::from_rgba(50, 45, 60, 110);
+    let shield_fill = Color::from_rgba(110, 160, 190, 180);
+    let fuel_fill = Color::from_rgba(190, 160, 80, 180);
+
+    draw_rectangle(x, y, w, h, paper);
+    draw_line(x, y, x + w, y, 1.5 * s, ink);
+    draw_line(x + 24.0 * s, y + 3.0 * s, x + w - 24.0 * s, y + 3.0 * s, 0.7 * s, ink_soft);
+
+    let pad_x = 22.0 * s;
+    let bar_h = 11.0 * s;
+    let bar_gap = 7.0 * s;
+    let label_size = 22.0 * s;
+    let label_w = 28.0 * s;
+    let label_gap = 12.0 * s;
+
+    let half = w * 0.5;
+    let max_bar_w = (half - pad_x - label_w - label_gap - 8.0 * s).max(40.0 * s);
+    let bar_w = (200.0 * s).min(max_bar_w);
+
+    let bar_y_shield = y + 20.0 * s;
+    let bar_y_fuel = bar_y_shield + bar_h + bar_gap;
+    let label_y = bar_y_shield + bar_h + bar_gap * 0.5 + label_size * 0.35;
+
     for (idx, ship) in world.ships.iter().enumerate() {
-        let x = if idx == 0 { vx + PAD } else { vx + vw - PAD - BAR_W };
-        let y0 = vy + PAD;
+        let (label_x, bar_x) = if idx == 0 {
+            (x + pad_x, x + pad_x + label_w + label_gap)
+        } else {
+            let bx = x + w - pad_x - bar_w;
+            (bx - label_gap - label_w, bx)
+        };
 
-        draw_text(
-            &format!("P{}", idx + 1),
-            x,
-            y0 + 14.0,
-            18.0,
-            SHIP_COLORS[idx],
-        );
-
-        let bar_x = x + 28.0;
-        draw_bar(bar_x, y0, BAR_W - 28.0, BAR_H, ship.shields / SHIELD_MAX, SKYBLUE);
-        draw_bar(bar_x, y0 + BAR_H + 4.0, BAR_W - 28.0, BAR_H, ship.fuel / FUEL_MAX, YELLOW);
+        draw_text(&format!("P{}", idx + 1), label_x, label_y, label_size, SHIP_COLORS[idx]);
+        draw_pencil_bar(bar_x, bar_y_shield, bar_w, bar_h, ship.shields / SHIELD_MAX, shield_fill, ink, ink_soft, s);
+        draw_pencil_bar(bar_x, bar_y_fuel, bar_w, bar_h, ship.fuel / FUEL_MAX, fuel_fill, ink, ink_soft, s);
     }
 }
 
-fn draw_bar(x: f32, y: f32, w: f32, h: f32, frac: f32, fill: Color) {
+fn draw_pencil_bar(x: f32, y: f32, w: f32, h: f32, frac: f32, fill: Color, ink: Color, ink_soft: Color, s: f32) {
     let frac = frac.clamp(0.0, 1.0);
-    draw_rectangle(x, y, w, h, Color::from_rgba(40, 40, 50, 200));
     draw_rectangle(x, y, w * frac, h, fill);
-    draw_rectangle_lines(x, y, w, h, 1.0, Color::from_rgba(180, 180, 200, 200));
+    draw_rectangle_lines(x, y, w, h, 1.5 * s, ink);
+    draw_rectangle_lines(x + 1.5 * s, y - 1.0 * s, w, h, 0.8 * s, ink_soft);
 }
