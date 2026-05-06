@@ -43,7 +43,7 @@ pub fn wasm_start() {
 
 enum AppState {
     Menu(menu::Menu),
-    Playing(Box<dyn Session>),
+    Playing { mode: menu::MenuChoice, session: Box<dyn Session> },
 }
 
 pub async fn run() {
@@ -59,9 +59,9 @@ pub async fn run() {
             let replay_flag = !net && !sync_test && args.iter().any(|a| a == "--replay");
 
             if net {
-                AppState::Playing(make_session(menu::MenuChoice::Net))
+                AppState::Playing { mode: menu::MenuChoice::Net, session: make_session(menu::MenuChoice::Net) }
             } else if sync_test {
-                AppState::Playing(make_session(menu::MenuChoice::SyncTest))
+                AppState::Playing { mode: menu::MenuChoice::SyncTest, session: make_session(menu::MenuChoice::SyncTest) }
             } else if replay_flag {
                 use std::cell::RefCell;
                 use std::rc::Rc;
@@ -79,7 +79,7 @@ pub async fn run() {
                 local =
                     local.with_recorder(Box::new(move |inputs| r2.borrow_mut().record(inputs)));
                 replay = Some(r);
-                AppState::Playing(Box::new(local))
+                AppState::Playing { mode: menu::MenuChoice::Local, session: Box::new(local) }
             } else {
                 AppState::Menu(menu::Menu::new())
             }
@@ -102,10 +102,10 @@ pub async fn run() {
                 menu.tick();
                 menu.draw();
                 if let Some(choice) = menu.take_choice() {
-                    state = AppState::Playing(make_session(choice));
+                    state = AppState::Playing { mode: choice, session: make_session(choice) };
                 }
             }
-            AppState::Playing(session) => {
+            AppState::Playing { mode, session } => {
                 #[cfg(not(target_arch = "wasm32"))]
                 if let Some(r) = &replay
                     && is_key_pressed(KeyCode::R)
@@ -121,7 +121,7 @@ pub async fn run() {
                 }
 
                 session.advance(get_frame_time());
-                draw_playing(session.world());
+                draw_playing(session.world(), *mode);
             }
         }
 
@@ -144,7 +144,7 @@ fn make_session(choice: menu::MenuChoice) -> Box<dyn Session> {
     }
 }
 
-fn draw_playing(world: &World) {
+fn draw_playing(world: &World, mode: menu::MenuChoice) {
     let sw = screen_width();
     let sh = screen_height();
     let dpi = screen_dpi_scale();
@@ -182,7 +182,7 @@ fn draw_playing(world: &World) {
     draw_bullets(world);
     draw_particles(world);
     set_default_camera();
-    draw_hud(world, 0.0, sh - hud_h_px, sw, hud_h_px, hud_h_px / HUD_H);
+    draw_hud(world, 0.0, sh - hud_h_px, sw, hud_h_px, hud_h_px / HUD_H, mode);
 }
 
 fn draw_level(level: &Level) {
@@ -231,7 +231,7 @@ fn draw_particles(world: &World) {
     }
 }
 
-fn draw_hud(world: &World, x: f32, y: f32, w: f32, h: f32, s: f32) {
+fn draw_hud(world: &World, x: f32, y: f32, w: f32, h: f32, s: f32, mode: menu::MenuChoice) {
     let paper = Color::from_rgba(238, 232, 213, 255);
     let ink = Color::from_rgba(50, 45, 60, 230);
     let ink_soft = Color::from_rgba(50, 45, 60, 110);
@@ -269,6 +269,18 @@ fn draw_hud(world: &World, x: f32, y: f32, w: f32, h: f32, s: f32) {
         draw_pencil_bar(bar_x, bar_y_shield, bar_w, bar_h, ship.shields / SHIELD_MAX, shield_fill, ink, ink_soft, s);
         draw_pencil_bar(bar_x, bar_y_fuel, bar_w, bar_h, ship.fuel / FUEL_MAX, fuel_fill, ink, ink_soft, s);
     }
+
+    let legend = match mode {
+        menu::MenuChoice::Net => "Move: WASD or Arrows    Fire: F or Space",
+        menu::MenuChoice::Local | menu::MenuChoice::SyncTest => {
+            "P1: WASD + F          P2: Arrows + Space"
+        }
+    };
+    let legend_size = 16.0 * s;
+    let dim = measure_text(legend, None, legend_size as u16, 1.0);
+    let legend_x = x + (w - dim.width) * 0.5;
+    let legend_y = y + h - 10.0 * s;
+    draw_text(legend, legend_x, legend_y, legend_size, ink);
 }
 
 fn draw_pencil_bar(x: f32, y: f32, w: f32, h: f32, frac: f32, fill: Color, ink: Color, ink_soft: Color, s: f32) {
