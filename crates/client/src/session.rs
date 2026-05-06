@@ -223,7 +223,7 @@ impl P2pRunner {
         }
 
         // Net play: each peer has their own keyboard, so accept either keyset
-        // (WASD+F or arrows+RightCtrl) regardless of which handle they got
+        // (WASD+F or arrows+Space) regardless of which handle they got
         // assigned by matchbox's player-id sort.
         let i = poll_input_p1() | poll_input_p2();
         for &h in local_handles {
@@ -359,7 +359,7 @@ pub fn poll_input_p2() -> Input {
     if is_key_down(KeyCode::Right) {
         input |= Input::ROTATE_RIGHT;
     }
-    if is_key_down(KeyCode::M) {
+    if is_key_down(KeyCode::Space) {
         input |= Input::FIRE;
     }
     input
