@@ -3,8 +3,8 @@ use macroquad::prelude::*;
 #[derive(Clone, Copy, Debug)]
 pub enum MenuChoice {
     Local,
-    Net,
-    SyncTest,
+    Host,
+    Join,
 }
 
 pub struct Menu {
@@ -60,8 +60,8 @@ impl Menu {
 
             let label = match c {
                 MenuChoice::Local => "LOCAL 2P",
-                MenuChoice::Net => "NET 1V1",
-                MenuChoice::SyncTest => "SYNCTEST",
+                MenuChoice::Host => "HOST 1V1",
+                MenuChoice::Join => "JOIN 1V1",
             };
             let label_size = 36.0;
             let ldim = measure_text(label, None, label_size as u16, 1.0);
@@ -76,7 +76,7 @@ impl Menu {
     }
 }
 
-const CHOICES: [MenuChoice; 3] = [MenuChoice::Local, MenuChoice::Net, MenuChoice::SyncTest];
+const CHOICES: [MenuChoice; 3] = [MenuChoice::Local, MenuChoice::Host, MenuChoice::Join];
 
 const BUTTON_W: f32 = 360.0;
 const BUTTON_H: f32 = 64.0;

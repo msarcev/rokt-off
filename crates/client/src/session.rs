@@ -1,3 +1,6 @@
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use ggrs::{
     Config, GgrsRequest, P2PSession, PlayerType, SessionBuilder, SessionState, SyncTestSession,
 };
@@ -6,6 +9,13 @@ use macroquad::prelude::{is_key_down, KeyCode};
 use sim::{Input, World};
 
 use crate::net_input::NetInput;
+
+#[derive(Clone, Copy, Debug)]
+pub struct LobbyStatus {
+    pub remote_peers: usize,
+    pub ready: bool,
+    pub failed: bool,
+}
 
 /// A driver for the simulation. The main loop calls `advance` once per
 /// frame with the wall-clock delta; the session decides how to step `world`.
@@ -154,6 +164,7 @@ impl Session for SyncTestRunner {
 /// is only built once both peers are known.
 pub struct P2pRunner {
     socket: WebRtcSocket,
+    failed: Arc<AtomicBool>,
     session: Option<P2PSession<GgrsConfig>>,
     world: World,
     accumulator: f32,
@@ -162,9 +173,10 @@ pub struct P2pRunner {
 
 impl P2pRunner {
     pub fn new(world: World, room_url: &str) -> Self {
-        let socket = crate::net::open(room_url);
+        let (socket, failed) = crate::net::open(room_url);
         Self {
             socket,
+            failed,
             session: None,
             world,
             accumulator: 0.0,
@@ -172,8 +184,32 @@ impl P2pRunner {
         }
     }
 
+    pub fn lobby_status(&self) -> LobbyStatus {
+        LobbyStatus {
+            remote_peers: self.socket.connected_peers().count(),
+            ready: self.session.is_some(),
+            failed: self.failed.load(Ordering::Relaxed),
+        }
+    }
+
+    pub fn poll(&mut self) {
+        if self.session.is_none() {
+            self.poll_lobby();
+        }
+    }
+
     fn poll_lobby(&mut self) {
-        for (peer, state) in self.socket.update_peers() {
+        // `try_update_peers` (vs `update_peers`, which panics) lets us surface
+        // a closed message-loop as a `failed` flag instead of a crash.
+        let updates = match self.socket.try_update_peers() {
+            Ok(u) => u,
+            Err(e) => {
+                eprintln!("[net] socket closed during lobby: {e:?}");
+                self.failed.store(true, Ordering::Relaxed);
+                return;
+            }
+        };
+        for (peer, state) in updates {
             match state {
                 PeerState::Connected => println!("[net] peer joined: {peer}"),
                 PeerState::Disconnected => println!("[net] peer left: {peer}"),

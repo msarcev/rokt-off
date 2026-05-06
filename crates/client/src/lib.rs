@@ -9,12 +9,74 @@ mod replay;
 use macroquad::prelude::*;
 use sim::{DEFAULT_SEED, FUEL_MAX, Level, ParticleKind, RectKind, SHIELD_MAX, World};
 
-use session::{LocalSession, P2pRunner, Session, SyncTestRunner};
+use session::{LobbyStatus, LocalSession, P2pRunner, Session};
+#[cfg(not(target_arch = "wasm32"))]
+use session::SyncTestRunner;
 
-pub const SIGNALING_URL: &str = match option_env!("ROKTOFF_SIGNALING_URL") {
+const SIGNALING_BASE: &str = match option_env!("ROKTOFF_SIGNALING_URL") {
     Some(s) => s,
-    None => "ws://localhost:3536/rokt-off-dev?next=2",
+    None => "ws://localhost:3536",
 };
+
+const ROOM_CODE_LEN: usize = 5;
+const LOBBY_TIMEOUT_SECS: f64 = 30.0;
+
+fn room_url(room: &str) -> String {
+    format!("{SIGNALING_BASE}/{room}?next=2")
+}
+
+fn make_room_code() -> String {
+    let mut code = String::with_capacity(ROOM_CODE_LEN);
+    for _ in 0..ROOM_CODE_LEN {
+        let n = rand::gen_range::<u32>(0, 26) as u8;
+        code.push(char::from(b'A' + n));
+    }
+    code
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Role {
+    Host,
+    Join,
+}
+
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen::prelude::wasm_bindgen]
+extern "C" {
+    #[wasm_bindgen::prelude::wasm_bindgen(js_name = "roktoff_get_room")]
+    fn js_get_room() -> String;
+
+    #[wasm_bindgen::prelude::wasm_bindgen(js_namespace = console, js_name = error)]
+    fn console_error(s: &str);
+}
+
+#[cfg(target_arch = "wasm32")]
+fn url_room_code() -> Option<String> {
+    let r = js_get_room();
+    (!r.is_empty()).then_some(r)
+}
+
+/// On wasm, panics trap without unwinding, leaving miniquad's RefCell
+/// guards locked and producing `already_borrowed` spam that hides the
+/// real first panic. This hook prints that first panic's payload+location
+/// to `console.error` instead of the default `{:?}` debug format.
+#[cfg(target_arch = "wasm32")]
+fn install_panic_hook() {
+    std::panic::set_hook(Box::new(|info| {
+        let msg = info
+            .payload()
+            .downcast_ref::<&'static str>()
+            .copied()
+            .map(str::to_string)
+            .or_else(|| info.payload().downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "<non-string panic payload>".to_string());
+        let loc = info
+            .location()
+            .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
+            .unwrap_or_else(|| "<unknown>".to_string());
+        console_error(&format!("[panic] {loc}: {msg}"));
+    }));
+}
 
 const SHIP_SIZE: f32 = 14.0;
 const SHIP_COLORS: [Color; 2] = [SKYBLUE, ORANGE];
@@ -43,52 +105,24 @@ pub fn wasm_start() {
 
 enum AppState {
     Menu(menu::Menu),
-    Playing { mode: menu::MenuChoice, session: Box<dyn Session> },
+    JoinEntry { buffer: String },
+    Lobby { runner: Option<Box<P2pRunner>>, room: String, role: Role, entered_at: f64 },
+    Playing { is_net: bool, session: Box<dyn Session> },
 }
 
 pub async fn run() {
+    #[cfg(target_arch = "wasm32")]
+    install_panic_hook();
+
+    rand::srand(miniquad::date::now().to_bits());
+
     #[cfg(not(target_arch = "wasm32"))]
     let mut replay: Option<std::rc::Rc<std::cell::RefCell<replay::Replay>>> = None;
 
-    let mut state: AppState = {
+    let mut state: AppState = initial_state(
         #[cfg(not(target_arch = "wasm32"))]
-        {
-            let args: Vec<String> = std::env::args().collect();
-            let net = args.iter().any(|a| a == "--net");
-            let sync_test = !net && args.iter().any(|a| a == "--sync-test");
-            let replay_flag = !net && !sync_test && args.iter().any(|a| a == "--replay");
-
-            if net {
-                AppState::Playing { mode: menu::MenuChoice::Net, session: make_session(menu::MenuChoice::Net) }
-            } else if sync_test {
-                AppState::Playing { mode: menu::MenuChoice::SyncTest, session: make_session(menu::MenuChoice::SyncTest) }
-            } else if replay_flag {
-                use std::cell::RefCell;
-                use std::rc::Rc;
-                let r = Rc::new(RefCell::new(replay::Replay::open()));
-                let world = World::with_seed(Level::default(), r.borrow().seed);
-                let recorded = r.borrow().recorded.clone();
-                let mut local = LocalSession::new(world);
-                local.replay(&recorded);
-                println!(
-                    "[replay] replayed {} ticks from {}",
-                    recorded.len(),
-                    r.borrow().path.display()
-                );
-                let r2 = r.clone();
-                local =
-                    local.with_recorder(Box::new(move |inputs| r2.borrow_mut().record(inputs)));
-                replay = Some(r);
-                AppState::Playing { mode: menu::MenuChoice::Local, session: Box::new(local) }
-            } else {
-                AppState::Menu(menu::Menu::new())
-            }
-        }
-        #[cfg(target_arch = "wasm32")]
-        {
-            AppState::Menu(menu::Menu::new())
-        }
-    };
+        &mut replay,
+    );
 
     let mut fullscreen = false;
     loop {
@@ -97,15 +131,52 @@ pub async fn run() {
             set_fullscreen(fullscreen);
         }
 
-        match &mut state {
+        let next: Option<AppState> = match &mut state {
             AppState::Menu(menu) => {
                 menu.tick();
                 menu.draw();
-                if let Some(choice) = menu.take_choice() {
-                    state = AppState::Playing { mode: choice, session: make_session(choice) };
+                menu.take_choice().map(|choice| match choice {
+                    menu::MenuChoice::Local => AppState::Playing {
+                        is_net: false,
+                        session: Box::new(LocalSession::new(fresh_world())),
+                    },
+                    menu::MenuChoice::Host => start_lobby(Role::Host, make_room_code()),
+                    menu::MenuChoice::Join => AppState::JoinEntry { buffer: String::new() },
+                })
+            }
+            AppState::JoinEntry { buffer } => {
+                tick_join_entry(buffer);
+                draw_join_entry(buffer);
+                if is_key_pressed(KeyCode::Escape) {
+                    Some(AppState::Menu(menu::Menu::new()))
+                } else if is_key_pressed(KeyCode::Enter) && buffer.len() == ROOM_CODE_LEN {
+                    Some(start_lobby(Role::Join, buffer.clone()))
+                } else {
+                    None
                 }
             }
-            AppState::Playing { mode, session } => {
+            AppState::Lobby { runner, room, role, entered_at } => {
+                let r = runner.as_mut().expect("lobby runner present");
+                r.poll();
+                let status = r.lobby_status();
+                let elapsed = get_time() - *entered_at;
+                draw_lobby(room, *role, status, elapsed);
+
+                if is_key_pressed(KeyCode::Escape) {
+                    Some(AppState::Menu(menu::Menu::new()))
+                } else if is_key_pressed(KeyCode::R)
+                    && (status.failed
+                        || (elapsed > LOBBY_TIMEOUT_SECS && status.remote_peers == 0))
+                {
+                    Some(start_lobby(*role, room.clone()))
+                } else if status.ready {
+                    let taken = runner.take().expect("runner taken once");
+                    Some(AppState::Playing { is_net: true, session: taken })
+                } else {
+                    None
+                }
+            }
+            AppState::Playing { is_net, session } => {
                 #[cfg(not(target_arch = "wasm32"))]
                 if let Some(r) = &replay
                     && is_key_pressed(KeyCode::R)
@@ -121,30 +192,148 @@ pub async fn run() {
                 }
 
                 session.advance(get_frame_time());
-                draw_playing(session.world(), *mode);
+                draw_playing(session.world(), *is_net);
+                None
             }
+        };
+
+        if let Some(next_state) = next {
+            state = next_state;
         }
 
         next_frame().await
     }
 }
 
-fn make_session(choice: menu::MenuChoice) -> Box<dyn Session> {
-    let world = World::with_seed(Level::default(), DEFAULT_SEED);
-    match choice {
-        menu::MenuChoice::Local => Box::new(LocalSession::new(world)),
-        menu::MenuChoice::Net => {
-            println!("[net] connecting to {SIGNALING_URL} — waiting for second peer...");
-            Box::new(P2pRunner::new(world, SIGNALING_URL))
-        }
-        menu::MenuChoice::SyncTest => {
-            println!("[sync-test] rollback validator engaged; check_distance=4");
-            Box::new(SyncTestRunner::new(world))
-        }
+fn fresh_world() -> World {
+    World::with_seed(Level::default(), DEFAULT_SEED)
+}
+
+fn start_lobby(role: Role, room: String) -> AppState {
+    let url = room_url(&room);
+    println!("[net] {role:?} room={room}");
+    AppState::Lobby {
+        runner: Some(Box::new(P2pRunner::new(fresh_world(), &url))),
+        room,
+        role,
+        entered_at: get_time(),
     }
 }
 
-fn draw_playing(world: &World, mode: menu::MenuChoice) {
+#[cfg(not(target_arch = "wasm32"))]
+fn initial_state(
+    replay: &mut Option<std::rc::Rc<std::cell::RefCell<replay::Replay>>>,
+) -> AppState {
+    let args: Vec<String> = std::env::args().collect();
+    let net_idx = args.iter().position(|a| a == "--net");
+    let sync_test = net_idx.is_none() && args.iter().any(|a| a == "--sync-test");
+    let replay_flag = net_idx.is_none() && !sync_test && args.iter().any(|a| a == "--replay");
+
+    if let Some(idx) = net_idx {
+        let room = args
+            .get(idx + 1)
+            .filter(|a| !a.starts_with("--"))
+            .cloned()
+            .map(|s| s.to_uppercase())
+            .unwrap_or_else(make_room_code);
+        return start_lobby(Role::Join, room);
+    }
+    if sync_test {
+        println!("[sync-test] rollback validator engaged; check_distance=4");
+        return AppState::Playing {
+            is_net: false,
+            session: Box::new(SyncTestRunner::new(fresh_world())),
+        };
+    }
+    if replay_flag {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+        let r = Rc::new(RefCell::new(replay::Replay::open()));
+        let world = World::with_seed(Level::default(), r.borrow().seed);
+        let recorded = r.borrow().recorded.clone();
+        let mut local = LocalSession::new(world);
+        local.replay(&recorded);
+        println!(
+            "[replay] replayed {} ticks from {}",
+            recorded.len(),
+            r.borrow().path.display()
+        );
+        let r2 = r.clone();
+        local = local.with_recorder(Box::new(move |inputs| r2.borrow_mut().record(inputs)));
+        *replay = Some(r);
+        return AppState::Playing { is_net: false, session: Box::new(local) };
+    }
+    AppState::Menu(menu::Menu::new())
+}
+
+#[cfg(target_arch = "wasm32")]
+fn initial_state() -> AppState {
+    if let Some(room) = url_room_code() {
+        return start_lobby(Role::Join, room);
+    }
+    AppState::Menu(menu::Menu::new())
+}
+
+fn tick_join_entry(buffer: &mut String) {
+    while let Some(c) = get_char_pressed() {
+        if buffer.len() < ROOM_CODE_LEN && c.is_ascii_alphabetic() {
+            buffer.push(c.to_ascii_uppercase());
+        }
+    }
+    if is_key_pressed(KeyCode::Backspace) {
+        buffer.pop();
+    }
+}
+
+const SCREEN_BG: Color = Color::new(12.0 / 255.0, 14.0 / 255.0, 20.0 / 255.0, 1.0);
+const PAPER: Color = Color::new(238.0 / 255.0, 232.0 / 255.0, 213.0 / 255.0, 1.0);
+
+fn draw_centered(text: &str, sw: f32, y: f32, size: u16, color: Color) {
+    let d = measure_text(text, None, size, 1.0);
+    draw_text(text, (sw - d.width) * 0.5, y, size as f32, color);
+}
+
+fn draw_join_entry(buffer: &str) {
+    clear_background(SCREEN_BG);
+    let sw = screen_width();
+    let sh = screen_height();
+
+    draw_centered("JOIN A ROOM", sw, sh * 0.30, 56, PAPER);
+    let placeholder = format!("{}{}", buffer, "_".repeat(ROOM_CODE_LEN - buffer.len()));
+    draw_centered(&placeholder, sw, sh * 0.55, 96, PAPER);
+    draw_centered("Type a 5-letter code, ENTER to join, ESC to cancel", sw, sh * 0.75, 22, PAPER);
+}
+
+fn draw_lobby(room: &str, role: Role, status: LobbyStatus, elapsed: f64) {
+    clear_background(SCREEN_BG);
+    let sw = screen_width();
+    let sh = screen_height();
+
+    let header = match role {
+        Role::Host => "HOSTING",
+        Role::Join => "JOINING",
+    };
+    draw_centered(header, sw, sh * 0.25, 48, PAPER);
+    draw_centered(room, sw, sh * 0.50, 128, PAPER);
+
+    let (status_line, hint) = if status.failed {
+        ("Connection failed.", "Press R to retry, ESC to cancel.")
+    } else if status.ready {
+        ("Starting…", "")
+    } else if status.remote_peers >= 1 {
+        ("Peer found — handshaking…", "ESC to cancel.")
+    } else if elapsed > LOBBY_TIMEOUT_SECS {
+        ("No opponent yet.", "Press R to retry, ESC to cancel.")
+    } else {
+        ("Waiting for opponent…", "ESC to cancel.")
+    };
+    draw_centered(status_line, sw, sh * 0.68, 28, PAPER);
+    if !hint.is_empty() {
+        draw_centered(hint, sw, sh * 0.78, 20, PAPER);
+    }
+}
+
+fn draw_playing(world: &World, is_net: bool) {
     let sw = screen_width();
     let sh = screen_height();
     let dpi = screen_dpi_scale();
@@ -182,7 +371,7 @@ fn draw_playing(world: &World, mode: menu::MenuChoice) {
     draw_bullets(world);
     draw_particles(world);
     set_default_camera();
-    draw_hud(world, 0.0, sh - hud_h_px, sw, hud_h_px, hud_h_px / HUD_H, mode);
+    draw_hud(world, 0.0, sh - hud_h_px, sw, hud_h_px, hud_h_px / HUD_H, is_net);
 }
 
 fn draw_level(level: &Level) {
@@ -231,7 +420,7 @@ fn draw_particles(world: &World) {
     }
 }
 
-fn draw_hud(world: &World, x: f32, y: f32, w: f32, h: f32, s: f32, mode: menu::MenuChoice) {
+fn draw_hud(world: &World, x: f32, y: f32, w: f32, h: f32, s: f32, is_net: bool) {
     let paper = Color::from_rgba(238, 232, 213, 255);
     let ink = Color::from_rgba(50, 45, 60, 230);
     let ink_soft = Color::from_rgba(50, 45, 60, 110);
@@ -270,11 +459,10 @@ fn draw_hud(world: &World, x: f32, y: f32, w: f32, h: f32, s: f32, mode: menu::M
         draw_pencil_bar(bar_x, bar_y_fuel, bar_w, bar_h, ship.fuel / FUEL_MAX, fuel_fill, ink, ink_soft, s);
     }
 
-    let legend = match mode {
-        menu::MenuChoice::Net => "Move: WASD or Arrows    Fire: F or Space",
-        menu::MenuChoice::Local | menu::MenuChoice::SyncTest => {
-            "P1: WASD + F          P2: Arrows + Space"
-        }
+    let legend = if is_net {
+        "Move: WASD or Arrows    Fire: F or Space"
+    } else {
+        "P1: WASD + F          P2: Arrows + Space"
     };
     let legend_size = 16.0 * s;
     let dim = measure_text(legend, None, legend_size as u16, 1.0);

@@ -27,6 +27,12 @@
         if (name === 'env') return importObject.env;
         throw new Error('require(' + name + ') is not supported');
     };
+
+    // Read by wasm via wasm-bindgen; "" means "no room in URL".
+    window.roktoff_get_room = function () {
+        var m = location.search.match(/[?&]room=([A-Za-z]{1,8})/);
+        return m ? m[1].toUpperCase() : "";
+    };
 </script>
 <script src="./pkg/rokt_off_client.js"></script>
 <script>
