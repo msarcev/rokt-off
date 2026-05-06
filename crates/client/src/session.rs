@@ -359,7 +359,7 @@ pub fn poll_input_p2() -> Input {
     if is_key_down(KeyCode::Right) {
         input |= Input::ROTATE_RIGHT;
     }
-    if is_key_down(KeyCode::RightControl) {
+    if is_key_down(KeyCode::M) {
         input |= Input::FIRE;
     }
     input
