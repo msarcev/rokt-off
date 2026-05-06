@@ -1,0 +1,58 @@
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (stable + wasm32 target)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: wasm
+
+      - name: Install just and wasm-bindgen-cli
+        uses: taiki-e/install-action@v2
+        with:
+          tool: just,wasm-bindgen-cli@0.2.120
+
+      - name: Set signaling URL (if secret present)
+        if: ${{ secrets.ROKTOFF_SIGNALING_URL != '' }}
+        run: echo "ROKTOFF_SIGNALING_URL=${{ secrets.ROKTOFF_SIGNALING_URL }}" >> "$GITHUB_ENV"
+
+      - name: Build wasm
+        run: just build-wasm
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: web
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
