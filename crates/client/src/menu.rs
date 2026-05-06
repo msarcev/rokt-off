@@ -40,7 +40,7 @@ impl Menu {
 
         let sw = screen_width();
         let sh = screen_height();
-        let title = "HEAD-ON";
+        let title = "ROKT-OFF";
         let title_size = 96.0;
         let dim = measure_text(title, None, title_size as u16, 1.0);
         draw_text(title, (sw - dim.width) / 2.0, sh * 0.30, title_size, Color::from_rgba(238, 232, 213, 255));
