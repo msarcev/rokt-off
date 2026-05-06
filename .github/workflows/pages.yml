@@ -35,8 +35,12 @@ jobs:
           tool: just,wasm-bindgen-cli@0.2.120
 
       - name: Set signaling URL (if secret present)
-        if: ${{ secrets.ROKTOFF_SIGNALING_URL != '' }}
-        run: echo "ROKTOFF_SIGNALING_URL=${{ secrets.ROKTOFF_SIGNALING_URL }}" >> "$GITHUB_ENV"
+        env:
+          SIGNAL: ${{ secrets.ROKTOFF_SIGNALING_URL }}
+        run: |
+          if [ -n "$SIGNAL" ]; then
+            echo "ROKTOFF_SIGNALING_URL=$SIGNAL" >> "$GITHUB_ENV"
+          fi
 
       - name: Build wasm
         run: just build-wasm
