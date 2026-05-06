@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>head-on-rs</title>
+<title>rokt-off</title>
 <style>
     html, body, canvas {
         margin: 0;
@@ -28,12 +28,12 @@
         throw new Error('require(' + name + ') is not supported');
     };
 </script>
-<script src="./pkg/head_on_client.js"></script>
+<script src="./pkg/rokt_off_client.js"></script>
 <script>
     register_plugins(plugins);
-    wasm_bindgen('./pkg/head_on_client_bg.wasm')
+    wasm_bindgen('./pkg/rokt_off_client_bg.wasm')
         .then(() => init_plugins(plugins))
-        .catch(err => console.error('[head-on] init failed:', err));
+        .catch(err => console.error('[rokt-off] init failed:', err));
 </script>
 </body>
 </html>

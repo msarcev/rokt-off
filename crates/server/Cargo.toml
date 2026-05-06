@@ -6,5 +6,5 @@ license.workspace = true
 publish.workspace = true
 
 [[bin]]
-name = "head-on-server"
+name = "rokt-off-server"
 path = "src/main.rs"

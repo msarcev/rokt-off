@@ -6,12 +6,12 @@ license.workspace = true
 publish.workspace = true
 
 [lib]
-name = "head_on_client"
+name = "rokt_off_client"
 path = "src/lib.rs"
 crate-type = ["cdylib", "rlib"]
 
 [[bin]]
-name = "head-on-client"
+name = "rokt-off-client"
 path = "src/main.rs"
 
 [dependencies]

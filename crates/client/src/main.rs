@@ -1,4 +1,4 @@
-use head_on_client::{run, window_conf};
+use rokt_off_client::{run, window_conf};
 
 #[macroquad::main(window_conf)]
 async fn main() {

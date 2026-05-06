@@ -1,4 +1,4 @@
-//! Pure deterministic simulation for head-on-rs.
+//! Pure deterministic simulation for rokt-off.
 //!
 //! No I/O, no global state, no `Instant::now()`, no unseeded RNG.
 //! Anything that breaks rollback determinism does not belong here.

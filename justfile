@@ -25,12 +25,12 @@ build-wasm:
     cargo build -p client --release --target wasm32-unknown-unknown
     rm -rf web/pkg
     wasm-bindgen --target no-modules --no-typescript --out-dir web/pkg \
-        target/wasm32-unknown-unknown/release/head_on_client.wasm
+        target/wasm32-unknown-unknown/release/rokt_off_client.wasm
     # Expose wasm-bindgen's instance to gl.js globals so miniquad's import
     # bridges can read Rust memory. Patch right after `wasm = instance.exports`.
-    sed -i.bak 's/wasm = instance.exports;/wasm = instance.exports; globalThis.wasm_memory = wasm.memory; globalThis.wasm_exports = wasm;/' web/pkg/head_on_client.js
-    rm -f web/pkg/head_on_client.js.bak
-    @echo 'wasm in web/pkg/head_on_client_bg.wasm — run "just serve-wasm" to play'
+    sed -i.bak 's/wasm = instance.exports;/wasm = instance.exports; globalThis.wasm_memory = wasm.memory; globalThis.wasm_exports = wasm;/' web/pkg/rokt_off_client.js
+    rm -f web/pkg/rokt_off_client.js.bak
+    @echo 'wasm in web/pkg/rokt_off_client_bg.wasm — run "just serve-wasm" to play'
 
 serve-wasm: build-wasm
     @echo "serving on http://localhost:8080"

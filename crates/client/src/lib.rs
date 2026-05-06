@@ -11,9 +11,9 @@ use sim::{DEFAULT_SEED, FUEL_MAX, Level, ParticleKind, RectKind, SHIELD_MAX, Wor
 
 use session::{LocalSession, P2pRunner, Session, SyncTestRunner};
 
-pub const SIGNALING_URL: &str = match option_env!("HEADON_SIGNALING_URL") {
+pub const SIGNALING_URL: &str = match option_env!("ROKTOFF_SIGNALING_URL") {
     Some(s) => s,
-    None => "ws://localhost:3536/head-on-dev?next=2",
+    None => "ws://localhost:3536/rokt-off-dev?next=2",
 };
 
 const SHIP_SIZE: f32 = 14.0;
@@ -26,7 +26,7 @@ const TOTAL_H: f32 = PLAY_H + HUD_H;
 
 pub fn window_conf() -> Conf {
     Conf {
-        window_title: "head-on-rs".to_owned(),
+        window_title: "rokt-off".to_owned(),
         window_width: PLAY_W as i32,
         window_height: TOTAL_H as i32,
         window_resizable: true,
