@@ -19,7 +19,6 @@ const SIGNALING_BASE: &str = match option_env!("ROKTOFF_SIGNALING_URL") {
 };
 
 const ROOM_CODE_LEN: usize = 5;
-const LOBBY_TIMEOUT_SECS: f64 = 30.0;
 
 fn room_url(room: &str) -> String {
     format!("{SIGNALING_BASE}/{room}?next=2")
@@ -106,7 +105,7 @@ pub fn wasm_start() {
 enum AppState {
     Menu(menu::Menu),
     JoinEntry { buffer: String },
-    Lobby { runner: Option<Box<P2pRunner>>, room: String, role: Role, entered_at: f64 },
+    Lobby { runner: Option<Box<P2pRunner>>, room: String, role: Role },
     Playing { is_net: bool, session: Box<dyn Session> },
 }
 
@@ -155,20 +154,20 @@ pub async fn run() {
                     None
                 }
             }
-            AppState::Lobby { runner, room, role, entered_at } => {
+            AppState::Lobby { runner, room, role } => {
                 let r = runner.as_mut().expect("lobby runner present");
                 r.poll();
                 let status = r.lobby_status();
-                let elapsed = get_time() - *entered_at;
-                draw_lobby(room, *role, status, elapsed);
+                draw_lobby(room, *role, status);
 
                 if is_key_pressed(KeyCode::Escape) {
                     Some(AppState::Menu(menu::Menu::new()))
-                } else if is_key_pressed(KeyCode::R)
-                    && (status.failed
-                        || (elapsed > LOBBY_TIMEOUT_SECS && status.remote_peers == 0))
-                {
-                    Some(start_lobby(*role, room.clone()))
+                } else if is_key_pressed(KeyCode::R) && !status.ready {
+                    let new_room = match role {
+                        Role::Host => make_room_code(),
+                        Role::Join => room.clone(),
+                    };
+                    Some(start_lobby(*role, new_room))
                 } else if status.ready {
                     let taken = runner.take().expect("runner taken once");
                     Some(AppState::Playing { is_net: true, session: taken })
@@ -177,23 +176,27 @@ pub async fn run() {
                 }
             }
             AppState::Playing { is_net, session } => {
-                #[cfg(not(target_arch = "wasm32"))]
-                if let Some(r) = &replay
-                    && is_key_pressed(KeyCode::R)
-                {
-                    r.borrow_mut().reset();
-                    let world = World::with_seed(Level::default(), DEFAULT_SEED);
-                    let r2 = r.clone();
-                    *session = Box::new(
-                        LocalSession::new(world).with_recorder(Box::new(move |inputs| {
-                            r2.borrow_mut().record(inputs)
-                        })),
-                    );
-                }
+                if is_key_pressed(KeyCode::Escape) {
+                    Some(AppState::Menu(menu::Menu::new()))
+                } else {
+                    #[cfg(not(target_arch = "wasm32"))]
+                    if let Some(r) = &replay
+                        && is_key_pressed(KeyCode::R)
+                    {
+                        r.borrow_mut().reset();
+                        let world = World::with_seed(Level::default(), DEFAULT_SEED);
+                        let r2 = r.clone();
+                        *session = Box::new(
+                            LocalSession::new(world).with_recorder(Box::new(move |inputs| {
+                                r2.borrow_mut().record(inputs)
+                            })),
+                        );
+                    }
 
-                session.advance(get_frame_time());
-                draw_playing(session.world(), *is_net);
-                None
+                    session.advance(get_frame_time());
+                    draw_playing(session.world(), *is_net);
+                    None
+                }
             }
         };
 
@@ -216,7 +219,6 @@ fn start_lobby(role: Role, room: String) -> AppState {
         runner: Some(Box::new(P2pRunner::new(fresh_world(), &url))),
         room,
         role,
-        entered_at: get_time(),
     }
 }
 
@@ -304,7 +306,7 @@ fn draw_join_entry(buffer: &str) {
     draw_centered("Type a 5-letter code, ENTER to join, ESC to cancel", sw, sh * 0.75, 22, PAPER);
 }
 
-fn draw_lobby(room: &str, role: Role, status: LobbyStatus, elapsed: f64) {
+fn draw_lobby(room: &str, role: Role, status: LobbyStatus) {
     clear_background(SCREEN_BG);
     let sw = screen_width();
     let sh = screen_height();
@@ -316,21 +318,21 @@ fn draw_lobby(room: &str, role: Role, status: LobbyStatus, elapsed: f64) {
     draw_centered(header, sw, sh * 0.25, 48, PAPER);
     draw_centered(room, sw, sh * 0.50, 128, PAPER);
 
-    let (status_line, hint) = if status.failed {
-        ("Connection failed.", "Press R to retry, ESC to cancel.")
+    let status_line = if status.failed {
+        "Connection failed."
     } else if status.ready {
-        ("Starting…", "")
+        "Starting…"
     } else if status.remote_peers >= 1 {
-        ("Peer found — handshaking…", "ESC to cancel.")
-    } else if elapsed > LOBBY_TIMEOUT_SECS {
-        ("No opponent yet.", "Press R to retry, ESC to cancel.")
+        "Peer found — handshaking…"
     } else {
-        ("Waiting for opponent…", "ESC to cancel.")
+        "Waiting for opponent…"
+    };
+    let hint = match role {
+        Role::Host => "R: new code   ESC: cancel",
+        Role::Join => "R: retry   ESC: cancel",
     };
     draw_centered(status_line, sw, sh * 0.68, 28, PAPER);
-    if !hint.is_empty() {
-        draw_centered(hint, sw, sh * 0.78, 20, PAPER);
-    }
+    draw_centered(hint, sw, sh * 0.78, 20, PAPER);
 }
 
 fn draw_playing(world: &World, is_net: bool) {
