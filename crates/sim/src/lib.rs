@@ -372,6 +372,7 @@ impl World {
             ship.landed = false;
             thrusted[idx] = step_ship(ship, *input, gravity, was_landed);
             resolve_ship_rects(ship, &self.level.rects, &mut wall_impact[idx]);
+            resolve_ship_mask(ship, &self.level.mask, &mut wall_impact[idx]);
 
             // Stay-landed sticky: pivot rotation can briefly lift the
             // contact vertex; treat the ship as still landed unless it's
@@ -732,6 +733,62 @@ fn resolve_ship_rects(ship: &mut Ship, rects: &[Rect], impact: &mut Option<WallI
             RectKind::Wall => resolve_ship_wall(ship, rect, impact),
         }
     }
+}
+
+/// Resolve ship vs bitmap mask. Iterates pixels in the ship's bounding box,
+/// gathers solid pixels within `SHIP_RADIUS`, and computes a push-out from
+/// the centroid of overlap. Hands off to `apply_contact` so landable
+/// surfaces (mask normal points up) trigger landing, otherwise bounce.
+fn resolve_ship_mask(ship: &mut Ship, mask: &BitMask, impact: &mut Option<WallImpact>) {
+    let r = SHIP_RADIUS;
+    let r_sq = r * r;
+    let cx = ship.pos.x;
+    let cy = ship.pos.y;
+
+    let x0 = (cx - r).floor() as i32;
+    let x1 = (cx + r).ceil() as i32;
+    let y0 = (cy - r).floor() as i32;
+    let y1 = (cy + r).ceil() as i32;
+
+    let mut sum = Vec2::ZERO;
+    let mut count = 0u32;
+
+    for y in y0..=y1 {
+        for x in x0..=x1 {
+            let dx = x as f32 + 0.5 - cx;
+            let dy = y as f32 + 0.5 - cy;
+            if dx * dx + dy * dy < r_sq && mask.is_solid(x, y) {
+                sum.x += dx;
+                sum.y += dy;
+                count += 1;
+            }
+        }
+    }
+
+    if count == 0 {
+        return;
+    }
+
+    // Centroid of overlap relative to the ship: vector pointing into the
+    // surface. Negate for the contact normal pointing back toward the ship.
+    let avg = sum / count as f32;
+    let avg_len = avg.length();
+    let normal = if avg_len > f32::EPSILON {
+        -avg / avg_len
+    } else {
+        // Fully embedded: nothing to project against. Push opposite the
+        // ship's motion, falling back to "up" when at rest.
+        let v_len = ship.vel.length();
+        if v_len > 1.0 {
+            -ship.vel / v_len
+        } else {
+            Vec2::new(0.0, -1.0)
+        }
+    };
+
+    let depth = (r - avg_len).max(0.0);
+    ship.pos += normal * depth;
+    apply_contact(ship, ship.pos - normal * SHIP_RADIUS, normal, impact);
 }
 
 fn resolve_ship_pad(ship: &mut Ship, pad: &Rect, impact: &mut Option<WallImpact>) {
@@ -1321,6 +1378,37 @@ mod tests {
         assert!(ship.shields > 20.0, "shields should regen, got {}", ship.shields);
         assert!(ship.fuel <= FUEL_MAX);
         assert!(ship.shields <= SHIELD_MAX);
+    }
+
+    #[test]
+    fn ship_lands_on_mask_only_floor() {
+        // Build a level with empty rects and a mask whose bottom 20 rows
+        // are solid. Ship dropped from above should land via the bitmap
+        // collision path alone.
+        let size = Vec2::new(1280.0, 720.0);
+        let mut mask = BitMask::new(size.x as u32, size.y as u32, false);
+        for y in 700..720 {
+            for x in 0..size.x as i32 {
+                mask.set(x, y, true);
+            }
+        }
+        let level = Level {
+            size,
+            gravity: DEFAULT_GRAVITY,
+            spawn_points: [Vec2::new(640.0, 100.0), Vec2::new(700.0, 100.0)],
+            rects: Vec::new(),
+            mask,
+        };
+        let mut world = World::new(level);
+        world.ships[0].pos = Vec2::new(640.0, 600.0);
+        world.ships[0].vel = Vec2::new(0.0, 30.0);
+        world.ships[1].pos = Vec2::new(-9999.0, -9999.0);
+        for _ in 0..180 {
+            world.tick([Input::empty(), Input::empty()]);
+        }
+        let ship = &world.ships[0];
+        assert!(ship.alive);
+        assert!(ship.landed, "expected mask-only landing");
     }
 
     #[test]
