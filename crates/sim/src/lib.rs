@@ -32,11 +32,14 @@ pub const UPRIGHT_ANGLE: f32 = -std::f32::consts::FRAC_PI_2;
 pub const SETTLED_ANGLE_TOL: f32 = 0.18;
 pub const SETTLED_DELAY_TICKS: u32 = 45;
 pub const LIFTOFF_VELOCITY: f32 = 30.0;
-pub const BOUNCE_RESTITUTION: f32 = 0.4;
+pub const BOUNCE_RESTITUTION: f32 = 0.25;
 pub const BOUNCE_FLOOR: f32 = 10.0;
 pub const PAD_SLAM_SPEED: f32 = 200.0;
 pub const PAD_LATERAL_FRICTION_FLOOR: f32 = 80.0;
 pub const PAD_LATERAL_RESTITUTION: f32 = 0.25;
+// cos(30°): contacts whose normal points within 30° of straight-up trigger
+// landing response (settle, tip, friction, landed=true) instead of bounce.
+pub const LANDABLE_DOT: f32 = 0.866;
 // Tilt threshold past which the ship tips over instead of settling.
 // Tuning knob: bigger = more forgiving. Reference: 0.39 = wing edge
 // vertical, 0.79 = CoM over contact wing, 1.57 = wing line vertical.
@@ -734,15 +737,15 @@ fn resolve_ship_rects(ship: &mut Ship, rects: &[Rect], impact: &mut Option<WallI
 fn resolve_ship_pad(ship: &mut Ship, pad: &Rect, impact: &mut Option<WallImpact>) {
     let pad_top = pad.min.y;
 
-    // CoM at or past the pad surface → treat as solid rect (side/bottom
-    // collision). Top-landing only applies when approaching from above.
+    // CoM at or past the pad surface → side/bottom hit, fall through to wall.
     if ship.pos.y >= pad_top {
         resolve_ship_wall(ship, pad, impact);
         return;
     }
 
     // Lowest triangle vertex horizontally inside the pad = the wing tip
-    // or nose actually touching down.
+    // or nose actually touching down. Pad detection stays vertex-based so
+    // sharply tilted approaches register at the actual contact point.
     let verts = ship.triangle_vertices();
     let mut lowest_y = f32::NEG_INFINITY;
     let mut lowest = Vec2::ZERO;
@@ -759,106 +762,7 @@ fn resolve_ship_pad(ship: &mut Ship, pad: &Rect, impact: &mut Option<WallImpact>
     let penetration = lowest_y - pad_top;
     ship.pos.y -= penetration;
 
-    // Rigid-body vertex velocity: v_at(p).y = v_cm.y + ω * (p.x - cm.x).
-    let r_x = lowest.x - ship.pos.x;
-    let v_at_vertex_y = ship.vel.y + ship.angular_vel * r_x;
-    let impact_speed = v_at_vertex_y.max(0.0);
-
-    let ship_speed = ship.vel.length();
-    if v_at_vertex_y > PAD_SLAM_SPEED || ship_speed > PAD_SLAM_SPEED {
-        let damage_speed = ship_speed.max(v_at_vertex_y);
-        let over = (damage_speed - SCRAPE_THRESHOLD).max(0.0);
-        let extra = over * over * IMPACT_DAMAGE_SCALE + CHIP_DAMAGE_PER_BOUNCE;
-        ship.shields = (ship.shields - extra).max(0.0);
-        *impact = Some(WallImpact {
-            pos: Vec2::new(lowest.x, pad_top),
-            normal: Vec2::new(0.0, -1.0),
-            speed: damage_speed,
-        });
-        if ship.shields <= 0.0 {
-            ship.alive = false;
-            return;
-        }
-        ship.vel.y = -BOUNCE_RESTITUTION * v_at_vertex_y;
-        return;
-    }
-
-    let is_bounce = v_at_vertex_y > BOUNCE_FLOOR;
-    if is_bounce {
-        // Discrete-bounce model: every contact chips shields and snaps
-        // the angle toward its target attitude (upright in basin, flat
-        // outside). Suppressed for already-tipped ships under active
-        // player rotation so A/D recovery isn't fought.
-        ship.shields = (ship.shields - CHIP_DAMAGE_PER_BOUNCE).max(0.0);
-        if ship.shields <= 0.0 {
-            ship.alive = false;
-            return;
-        }
-
-        let snap_allowed =
-            !ship.tipped_over || ship.angular_vel.abs() < TIPPED_SETTLE_AV_THRESHOLD;
-        if snap_allowed {
-            let tilt = angle_diff(ship.angle, UPRIGHT_ANGLE);
-            let target_tilt = if tilt.abs() < TIP_OVER_ANGLE {
-                0.0
-            } else {
-                tilt.signum() * TIP_FLAT_ANGLE
-            };
-            let new_tilt = target_tilt + (tilt - target_tilt) * BOUNCE_RECOVERY_FACTOR;
-            ship.angle = UPRIGHT_ANGLE + new_tilt;
-            ship.angular_vel = 0.0;
-
-            if tilt.abs() > TIP_OVER_ANGLE {
-                ship.tipped_over = true;
-            }
-        }
-    }
-
-    let over = (impact_speed - SCRAPE_THRESHOLD).max(0.0);
-    let extra = over * over * IMPACT_DAMAGE_SCALE;
-    if extra > 0.0 {
-        ship.shields = (ship.shields - extra).max(0.0);
-        if ship.shields <= 0.0 {
-            ship.alive = false;
-            return;
-        }
-    }
-
-    if is_bounce {
-        ship.vel.y = -BOUNCE_RESTITUTION * v_at_vertex_y;
-    } else if ship.vel.y > 0.0 {
-        ship.vel.y = 0.0;
-        let tilt = angle_diff(ship.angle, UPRIGHT_ANGLE);
-        if !ship.tipped_over {
-            // Smooth pivot toward upright; snap once close enough.
-            ship.angle = if tilt.abs() < SETTLED_ANGLE_TOL {
-                UPRIGHT_ANGLE
-            } else {
-                UPRIGHT_ANGLE + tilt * (1.0 - SETTLE_RIGHTING_RATE)
-            };
-            ship.angular_vel = 0.0;
-        } else if ship.angular_vel.abs() < TIPPED_SETTLE_AV_THRESHOLD {
-            // Tipped and idle: pivot toward lying-flat on the side wing.
-            // Don't reset angular_vel — rotation input ramps through
-            // 0.9-damping and would never escape if we did.
-            let target = tilt.signum() * TIP_FLAT_ANGLE;
-            ship.angle = if (tilt - target).abs() < TIPPED_SETTLE_SNAP_TOL {
-                UPRIGHT_ANGLE + target
-            } else {
-                UPRIGHT_ANGLE + target + (tilt - target) * (1.0 - TIPPED_SETTLE_RATE)
-            };
-        }
-    }
-
-    // Sticky pad: gentle sideways motion locks immediately, hard sideways
-    // impact gets one weak bounce before locking.
-    if ship.vel.x.abs() > PAD_LATERAL_FRICTION_FLOOR {
-        ship.vel.x = -PAD_LATERAL_RESTITUTION * ship.vel.x;
-    } else {
-        ship.vel.x = 0.0;
-    }
-
-    ship.landed = true;
+    apply_contact(ship, Vec2::new(lowest.x, pad_top), Vec2::new(0.0, -1.0), impact);
 }
 
 fn resolve_ship_wall(ship: &mut Ship, rect: &Rect, impact: &mut Option<WallImpact>) {
@@ -866,12 +770,6 @@ fn resolve_ship_wall(ship: &mut Ship, rect: &Rect, impact: &mut Option<WallImpac
     let delta = ship.pos - closest;
     let dist_sq = delta.length_squared();
     if dist_sq >= SHIP_RADIUS * SHIP_RADIUS {
-        return;
-    }
-
-    ship.shields = (ship.shields - WALL_CONTACT_DPS * DT).max(0.0);
-    if ship.shields <= 0.0 {
-        ship.alive = false;
         return;
     }
 
@@ -909,17 +807,156 @@ fn resolve_ship_wall(ship: &mut Ship, rect: &Rect, impact: &mut Option<WallImpac
     };
 
     ship.pos += normal * depth;
+    apply_contact(ship, ship.pos - normal * SHIP_RADIUS, normal, impact);
+}
+
+/// Dispatch a contact to the landing or bounce response based on its
+/// normal. A surface whose normal points within ~30° of straight-up is
+/// landable; everything else just bounces.
+fn apply_contact(
+    ship: &mut Ship,
+    contact: Vec2,
+    normal: Vec2,
+    impact: &mut Option<WallImpact>,
+) {
+    if normal.dot(Vec2::new(0.0, -1.0)) > LANDABLE_DOT {
+        apply_landing(ship, contact, normal, impact);
+    } else {
+        apply_bounce(ship, contact, normal, impact);
+    }
+}
+
+fn apply_landing(
+    ship: &mut Ship,
+    contact: Vec2,
+    normal: Vec2,
+    impact: &mut Option<WallImpact>,
+) {
+    // Rigid-body velocity at the contact point: v_cm + ω × r. In 2D the
+    // cross is ω · (-r.y, r.x), so a tilted ship's wing tip can be
+    // moving faster than its centre.
+    let r = contact - ship.pos;
+    let v_at = ship.vel + ship.angular_vel * Vec2::new(-r.y, r.x);
+    let impact_speed = (-v_at.dot(normal)).max(0.0);
+    let ship_speed = ship.vel.length();
+
+    if impact_speed > PAD_SLAM_SPEED || ship_speed > PAD_SLAM_SPEED {
+        let damage_speed = ship_speed.max(impact_speed);
+        let over = (damage_speed - SCRAPE_THRESHOLD).max(0.0);
+        let extra = over * over * IMPACT_DAMAGE_SCALE + CHIP_DAMAGE_PER_BOUNCE;
+        ship.shields = (ship.shields - extra).max(0.0);
+        *impact = Some(WallImpact { pos: contact, normal, speed: damage_speed });
+        if ship.shields <= 0.0 {
+            ship.alive = false;
+            return;
+        }
+        let v_along_normal = ship.vel.dot(normal);
+        if v_along_normal < 0.0 {
+            ship.vel -= normal * (1.0 + BOUNCE_RESTITUTION) * v_along_normal;
+        }
+        return;
+    }
+
+    let is_bounce = impact_speed > BOUNCE_FLOOR;
+    if is_bounce {
+        // Discrete-bounce model: each contact chips shields and snaps
+        // the angle toward upright (or flat-tipped). Suppressed for
+        // already-tipped ships under active rotation so A/D recovery
+        // isn't fought.
+        ship.shields = (ship.shields - CHIP_DAMAGE_PER_BOUNCE).max(0.0);
+        if ship.shields <= 0.0 {
+            ship.alive = false;
+            return;
+        }
+
+        let snap_allowed =
+            !ship.tipped_over || ship.angular_vel.abs() < TIPPED_SETTLE_AV_THRESHOLD;
+        if snap_allowed {
+            let tilt = angle_diff(ship.angle, UPRIGHT_ANGLE);
+            let target_tilt = if tilt.abs() < TIP_OVER_ANGLE {
+                0.0
+            } else {
+                tilt.signum() * TIP_FLAT_ANGLE
+            };
+            let new_tilt = target_tilt + (tilt - target_tilt) * BOUNCE_RECOVERY_FACTOR;
+            ship.angle = UPRIGHT_ANGLE + new_tilt;
+            ship.angular_vel = 0.0;
+
+            if tilt.abs() > TIP_OVER_ANGLE {
+                ship.tipped_over = true;
+            }
+        }
+    }
+
+    let over = (impact_speed - SCRAPE_THRESHOLD).max(0.0);
+    let extra = over * over * IMPACT_DAMAGE_SCALE;
+    if extra > 0.0 {
+        ship.shields = (ship.shields - extra).max(0.0);
+        if ship.shields <= 0.0 {
+            ship.alive = false;
+            return;
+        }
+    }
+
+    let v_along_normal = ship.vel.dot(normal);
+    if is_bounce {
+        if v_along_normal < 0.0 {
+            ship.vel -= normal * (1.0 + BOUNCE_RESTITUTION) * v_along_normal;
+        }
+    } else if v_along_normal < 0.0 {
+        // Settle: kill the component going into the surface, then
+        // smooth the angle toward upright (or flat if tipped).
+        ship.vel -= normal * v_along_normal;
+        let tilt = angle_diff(ship.angle, UPRIGHT_ANGLE);
+        if !ship.tipped_over {
+            ship.angle = if tilt.abs() < SETTLED_ANGLE_TOL {
+                UPRIGHT_ANGLE
+            } else {
+                UPRIGHT_ANGLE + tilt * (1.0 - SETTLE_RIGHTING_RATE)
+            };
+            ship.angular_vel = 0.0;
+        } else if ship.angular_vel.abs() < TIPPED_SETTLE_AV_THRESHOLD {
+            // Don't reset angular_vel — rotation input ramps through
+            // 0.9-damping and would never escape if we did.
+            let target = tilt.signum() * TIP_FLAT_ANGLE;
+            ship.angle = if (tilt - target).abs() < TIPPED_SETTLE_SNAP_TOL {
+                UPRIGHT_ANGLE + target
+            } else {
+                UPRIGHT_ANGLE + target + (tilt - target) * (1.0 - TIPPED_SETTLE_RATE)
+            };
+        }
+    }
+
+    // Lateral friction along the surface tangent (perpendicular to normal).
+    let tangent = Vec2::new(-normal.y, normal.x);
+    let v_tan = ship.vel.dot(tangent);
+    let new_v_tan = if v_tan.abs() > PAD_LATERAL_FRICTION_FLOOR {
+        -PAD_LATERAL_RESTITUTION * v_tan
+    } else {
+        0.0
+    };
+    ship.vel += tangent * (new_v_tan - v_tan);
+
+    ship.landed = true;
+}
+
+fn apply_bounce(
+    ship: &mut Ship,
+    contact: Vec2,
+    normal: Vec2,
+    impact: &mut Option<WallImpact>,
+) {
+    ship.shields = (ship.shields - WALL_CONTACT_DPS * DT).max(0.0);
+    if ship.shields <= 0.0 {
+        ship.alive = false;
+        return;
+    }
 
     let v_along_normal = ship.vel.dot(normal);
     let impact_speed = (-v_along_normal).max(0.0);
 
-    *impact = Some(WallImpact {
-        pos: ship.pos - normal * SHIP_RADIUS,
-        normal,
-        speed: impact_speed,
-    });
+    *impact = Some(WallImpact { pos: contact, normal, speed: impact_speed });
 
-    // Chip on rebound only — sliding/resting contacts don't chip.
     if impact_speed > BOUNCE_FLOOR {
         ship.shields = (ship.shields - CHIP_DAMAGE_PER_BOUNCE).max(0.0);
         if ship.shields <= 0.0 {
@@ -1088,6 +1125,26 @@ mod tests {
             "soft landing should only chip a few points, got {}",
             ship.shields
         );
+        assert!(ship.alive);
+    }
+
+    #[test]
+    fn soft_upright_touchdown_on_floor_lands() {
+        // Drop slowly onto the bottom border wall (y >= 700) at a spot
+        // not covered by a pad. Ship should land just like on a pad.
+        let mut world = world_with_ship(
+            Vec2::new(640.0, 670.0),
+            Vec2::new(0.0, 30.0),
+            -std::f32::consts::FRAC_PI_2,
+        );
+        for _ in 0..30 {
+            world.tick([Input::empty(), Input::empty()]);
+            if world.ships[0].landed {
+                break;
+            }
+        }
+        let ship = &world.ships[0];
+        assert!(ship.landed, "expected ship to land on the floor wall");
         assert!(ship.alive);
     }
 
@@ -1264,6 +1321,30 @@ mod tests {
         assert!(ship.shields > 20.0, "shields should regen, got {}", ship.shields);
         assert!(ship.fuel <= FUEL_MAX);
         assert!(ship.shields <= SHIELD_MAX);
+    }
+
+    #[test]
+    fn floor_landing_refuels_and_recharges() {
+        // Same scenario as pad_refuels_and_recharges_while_landed but
+        // dropped over the bare floor between the pads, not on a pad.
+        let mut world = world_with_ship(
+            Vec2::new(640.0, 600.0),
+            Vec2::new(0.0, 30.0),
+            -std::f32::consts::FRAC_PI_2,
+        );
+        world.ships[0].fuel = 100.0;
+        world.ships[0].shields = 20.0;
+        for _ in 0..180 {
+            world.tick([Input::empty(), Input::empty()]);
+        }
+        let ship = &world.ships[0];
+        assert!(ship.landed);
+        assert!(ship.fuel > 100.0, "fuel should regen on floor, got {}", ship.fuel);
+        assert!(
+            ship.shields > 20.0,
+            "shields should regen on floor, got {}",
+            ship.shields
+        );
     }
 
     #[test]
