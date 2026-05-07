@@ -7,7 +7,7 @@ pub mod session;
 mod replay;
 
 use macroquad::prelude::*;
-use sim::{DEFAULT_SEED, FUEL_MAX, Level, ParticleKind, RectKind, SHIELD_MAX, World};
+use sim::{BitMask, DEFAULT_SEED, FUEL_MAX, Level, ParticleKind, RectKind, SHIELD_MAX, World};
 
 use session::{LobbyStatus, LocalSession, P2pRunner, Session};
 #[cfg(not(target_arch = "wasm32"))]
@@ -124,10 +124,14 @@ pub async fn run() {
     );
 
     let mut fullscreen = false;
+    let mut show_mask = false;
     loop {
         if is_key_pressed(KeyCode::F11) {
             fullscreen = !fullscreen;
             set_fullscreen(fullscreen);
+        }
+        if is_key_pressed(KeyCode::F1) {
+            show_mask = !show_mask;
         }
 
         let next: Option<AppState> = match &mut state {
@@ -194,7 +198,7 @@ pub async fn run() {
                     }
 
                     session.advance(get_frame_time());
-                    draw_playing(session.world(), *is_net);
+                    draw_playing(session.world(), *is_net, show_mask);
                     None
                 }
             }
@@ -335,7 +339,7 @@ fn draw_lobby(room: &str, role: Role, status: LobbyStatus) {
     draw_centered(hint, sw, sh * 0.78, 20, PAPER);
 }
 
-fn draw_playing(world: &World, is_net: bool) {
+fn draw_playing(world: &World, is_net: bool, show_mask: bool) {
     let sw = screen_width();
     let sh = screen_height();
     let dpi = screen_dpi_scale();
@@ -365,6 +369,9 @@ fn draw_playing(world: &World, is_net: bool) {
     set_camera(&cam);
     clear_background(Color::from_rgba(12, 14, 20, 255));
     draw_level(&world.level);
+    if show_mask {
+        draw_mask_overlay(&world.level.mask);
+    }
     for (idx, ship) in world.ships.iter().enumerate() {
         if ship.alive {
             draw_ship(ship, SHIP_COLORS[idx]);
@@ -384,6 +391,33 @@ fn draw_level(level: &Level) {
         };
         let size = r.max - r.min;
         draw_rectangle(r.min.x, r.min.y, size.x, size.y, color);
+    }
+}
+
+fn draw_mask_overlay(mask: &BitMask) {
+    let color = Color::from_rgba(255, 0, 255, 110);
+    for y in 0..mask.height as i32 {
+        let mut run_start: Option<i32> = None;
+        for x in 0..mask.width as i32 {
+            let solid = mask.is_solid(x, y);
+            match (solid, run_start) {
+                (true, None) => run_start = Some(x),
+                (false, Some(start)) => {
+                    draw_rectangle(start as f32, y as f32, (x - start) as f32, 1.0, color);
+                    run_start = None;
+                }
+                _ => {}
+            }
+        }
+        if let Some(start) = run_start {
+            draw_rectangle(
+                start as f32,
+                y as f32,
+                (mask.width as i32 - start) as f32,
+                1.0,
+                color,
+            );
+        }
     }
 }
 
