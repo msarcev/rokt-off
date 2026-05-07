@@ -369,6 +369,7 @@ fn draw_playing(world: &World, is_net: bool, show_mask: bool) {
     set_camera(&cam);
     clear_background(Color::from_rgba(12, 14, 20, 255));
     draw_level(&world.level);
+    draw_mask_walls(&world.level.mask);
     if show_mask {
         draw_mask_overlay(&world.level.mask);
     }
@@ -394,8 +395,15 @@ fn draw_level(level: &Level) {
     }
 }
 
+fn draw_mask_walls(mask: &BitMask) {
+    draw_mask_runs(mask, Color::from_rgba(70, 70, 80, 255));
+}
+
 fn draw_mask_overlay(mask: &BitMask) {
-    let color = Color::from_rgba(255, 0, 255, 110);
+    draw_mask_runs(mask, Color::from_rgba(255, 0, 255, 110));
+}
+
+fn draw_mask_runs(mask: &BitMask, color: Color) {
     for y in 0..mask.height as i32 {
         let mut run_start: Option<i32> = None;
         for x in 0..mask.width as i32 {
