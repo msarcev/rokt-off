@@ -181,6 +181,68 @@ impl Rng {
     }
 }
 
+/// 1-bit-per-pixel collision mask, row-major, packed into `u64` words.
+///
+/// One mask pixel corresponds to one logical world unit. Sampling outside the
+/// mask bounds returns `true` (solid), so the mask edge acts as the world
+/// boundary.
+#[derive(Clone, Debug)]
+pub struct BitMask {
+    pub width: u32,
+    pub height: u32,
+    bits: Vec<u64>,
+}
+
+impl BitMask {
+    pub fn new(width: u32, height: u32, fill: bool) -> Self {
+        let total = (width as usize) * (height as usize);
+        let words = total.div_ceil(64);
+        let word = if fill { u64::MAX } else { 0 };
+        Self { width, height, bits: vec![word; words] }
+    }
+
+    pub fn is_solid(&self, x: i32, y: i32) -> bool {
+        if x < 0 || y < 0 || (x as u32) >= self.width || (y as u32) >= self.height {
+            return true;
+        }
+        let idx = (y as u32 as usize) * (self.width as usize) + (x as usize);
+        (self.bits[idx / 64] >> (idx % 64)) & 1 == 1
+    }
+
+    pub fn set(&mut self, x: i32, y: i32, solid: bool) {
+        if x < 0 || y < 0 || (x as u32) >= self.width || (y as u32) >= self.height {
+            return;
+        }
+        let idx = (y as u32 as usize) * (self.width as usize) + (x as usize);
+        let bit = 1u64 << (idx % 64);
+        if solid {
+            self.bits[idx / 64] |= bit;
+        } else {
+            self.bits[idx / 64] &= !bit;
+        }
+    }
+
+    /// Rasterise every `Wall` rect into a fresh mask. Pads are skipped.
+    pub fn from_wall_rects(width: u32, height: u32, rects: &[Rect]) -> Self {
+        let mut mask = Self::new(width, height, false);
+        for rect in rects {
+            if rect.kind != RectKind::Wall {
+                continue;
+            }
+            let x0 = (rect.min.x as i32).max(0);
+            let y0 = (rect.min.y as i32).max(0);
+            let x1 = (rect.max.x as i32).min(width as i32);
+            let y1 = (rect.max.y as i32).min(height as i32);
+            for y in y0..y1 {
+                for x in x0..x1 {
+                    mask.set(x, y, true);
+                }
+            }
+        }
+        mask
+    }
+}
+
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum RectKind {
     Wall,
@@ -200,6 +262,7 @@ pub struct Level {
     pub gravity: f32,
     pub spawn_points: [Vec2; 2],
     pub rects: Vec<Rect>,
+    pub mask: BitMask,
 }
 
 impl Default for Level {
@@ -219,11 +282,13 @@ impl Default for Level {
             // P2 landing pad (centered on spawn x=1040)
             Rect { min: Vec2::new(980.0, 620.0), max: Vec2::new(1100.0, 640.0), kind: RectKind::Pad },
         ];
+        let mask = BitMask::from_wall_rects(size.x as u32, size.y as u32, &rects);
         Self {
             size,
             gravity: DEFAULT_GRAVITY,
             spawn_points: [Vec2::new(240.0, 200.0), Vec2::new(1040.0, 200.0)],
             rects,
+            mask,
         }
     }
 }
@@ -956,6 +1021,22 @@ mod tests {
         let level = Level::default();
         assert!(level.rects.iter().any(|r| r.kind == RectKind::Pad));
         assert!(level.rects.iter().filter(|r| r.kind == RectKind::Wall).count() >= 4);
+    }
+
+    #[test]
+    fn default_level_mask_agrees_with_walls() {
+        let level = Level::default();
+        // Center of the play area: empty.
+        assert!(!level.mask.is_solid(640, 360));
+        // Inside the floor (y >= 700): solid.
+        assert!(level.mask.is_solid(640, 710));
+        // Inside the ceiling (y < 20): solid.
+        assert!(level.mask.is_solid(640, 5));
+        // Inside the left wall (x < 20): solid.
+        assert!(level.mask.is_solid(5, 360));
+        // Out-of-bounds sample: solid (mask self-bounds the world).
+        assert!(level.mask.is_solid(-1, 360));
+        assert!(level.mask.is_solid(640, 9999));
     }
 
     #[test]
