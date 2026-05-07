@@ -271,21 +271,20 @@ pub struct Level {
 impl Default for Level {
     fn default() -> Self {
         let size = Vec2::new(1280.0, 720.0);
-        let rects = vec![
-            // floor
+        // Borders live in the mask now; only pads remain as rects.
+        let wall_rects = [
             Rect { min: Vec2::new(0.0, 700.0), max: Vec2::new(size.x, size.y), kind: RectKind::Wall },
-            // ceiling
             Rect { min: Vec2::ZERO, max: Vec2::new(size.x, 20.0), kind: RectKind::Wall },
-            // left wall
             Rect { min: Vec2::ZERO, max: Vec2::new(20.0, size.y), kind: RectKind::Wall },
-            // right wall
             Rect { min: Vec2::new(size.x - 20.0, 0.0), max: size, kind: RectKind::Wall },
+        ];
+        let mask = BitMask::from_wall_rects(size.x as u32, size.y as u32, &wall_rects);
+        let rects = vec![
             // P1 landing pad (centered on spawn x=240)
             Rect { min: Vec2::new(180.0, 620.0), max: Vec2::new(300.0, 640.0), kind: RectKind::Pad },
             // P2 landing pad (centered on spawn x=1040)
             Rect { min: Vec2::new(980.0, 620.0), max: Vec2::new(1100.0, 640.0), kind: RectKind::Pad },
         ];
-        let mask = BitMask::from_wall_rects(size.x as u32, size.y as u32, &rects);
         Self {
             size,
             gravity: DEFAULT_GRAVITY,
@@ -445,7 +444,7 @@ impl World {
             b.pos += b.vel * DT;
             b.ttl -= DT;
         }
-        resolve_bullets(&mut self.bullets, &mut self.ships, &self.level.rects);
+        resolve_bullets(&mut self.bullets, &mut self.ships, &self.level);
         self.bullets.retain(|b| b.ttl > 0.0);
 
         // Newly-dead ships explode.
@@ -485,7 +484,7 @@ impl World {
             p.vel += gravity * DT;
             p.ttl -= DT;
         }
-        resolve_particles(&mut self.particles, &mut self.ships, &self.level.rects);
+        resolve_particles(&mut self.particles, &mut self.ships, &self.level);
         self.particles.retain(|p| p.ttl > 0.0);
 
         self.tick += 1;
@@ -561,14 +560,16 @@ fn spawn_thrust(particles: &mut Vec<Particle>, rng: &mut Rng, ship: &Ship, owner
     }
 }
 
-fn resolve_particles(particles: &mut [Particle], ships: &mut [Ship; 2], rects: &[Rect]) {
+fn resolve_particles(particles: &mut [Particle], ships: &mut [Ship; 2], level: &Level) {
     let r = SHIP_RADIUS + PARTICLE_RADIUS;
     let r_sq = r * r;
     for p in particles.iter_mut() {
         if p.ttl <= 0.0 {
             continue;
         }
-        if rects.iter().any(|rect| point_in_rect(p.pos, rect)) {
+        if level.rects.iter().any(|rect| point_in_rect(p.pos, rect))
+            || level.mask.is_solid(p.pos.x as i32, p.pos.y as i32)
+        {
             p.ttl = 0.0;
             continue;
         }
@@ -677,13 +678,15 @@ fn project_triangle(tri: &[Vec2; 3], axis: Vec2) -> (f32, f32) {
     (p0.min(p1).min(p2), p0.max(p1).max(p2))
 }
 
-fn resolve_bullets(bullets: &mut [Bullet], ships: &mut [Ship; 2], rects: &[Rect]) {
+fn resolve_bullets(bullets: &mut [Bullet], ships: &mut [Ship; 2], level: &Level) {
     for b in bullets.iter_mut() {
         if b.ttl <= 0.0 {
             continue;
         }
-        // Bullet vs rects: any kind kills the bullet on contact.
-        if rects.iter().any(|r| point_in_rect(b.pos, r)) {
+        // Bullet vs world: rects of any kind, or any solid mask pixel.
+        if level.rects.iter().any(|r| point_in_rect(b.pos, r))
+            || level.mask.is_solid(b.pos.x as i32, b.pos.y as i32)
+        {
             b.ttl = 0.0;
             continue;
         }
@@ -735,49 +738,49 @@ fn resolve_ship_rects(ship: &mut Ship, rects: &[Rect], impact: &mut Option<WallI
     }
 }
 
-/// Resolve ship vs bitmap mask. Iterates pixels in the ship's bounding box,
-/// gathers solid pixels within `SHIP_RADIUS`, and computes a push-out from
-/// the centroid of overlap. Hands off to `apply_contact` so landable
-/// surfaces (mask normal points up) trigger landing, otherwise bounce.
+/// Resolve ship vs bitmap mask using the triangle hull. Iterates pixels in
+/// the triangle's bounding box, collects those whose centre is inside both
+/// the triangle and the solid mask, then pushes the ship along the contact
+/// normal until the deepest overlap pixel is at an empty cell.
 fn resolve_ship_mask(ship: &mut Ship, mask: &BitMask, impact: &mut Option<WallImpact>) {
-    let r = SHIP_RADIUS;
-    let r_sq = r * r;
-    let cx = ship.pos.x;
-    let cy = ship.pos.y;
+    let verts = ship.triangle_vertices();
 
-    let x0 = (cx - r).floor() as i32;
-    let x1 = (cx + r).ceil() as i32;
-    let y0 = (cy - r).floor() as i32;
-    let y1 = (cy + r).ceil() as i32;
+    let mut min_p = verts[0];
+    let mut max_p = verts[0];
+    for v in &verts[1..] {
+        min_p = min_p.min(*v);
+        max_p = max_p.max(*v);
+    }
+    let x0 = min_p.x.floor() as i32;
+    let x1 = max_p.x.ceil() as i32;
+    let y0 = min_p.y.floor() as i32;
+    let y1 = max_p.y.ceil() as i32;
 
-    let mut sum = Vec2::ZERO;
-    let mut count = 0u32;
-
+    let mut overlap: Vec<Vec2> = Vec::new();
     for y in y0..=y1 {
         for x in x0..=x1 {
-            let dx = x as f32 + 0.5 - cx;
-            let dy = y as f32 + 0.5 - cy;
-            if dx * dx + dy * dy < r_sq && mask.is_solid(x, y) {
-                sum.x += dx;
-                sum.y += dy;
-                count += 1;
+            let p = Vec2::new(x as f32 + 0.5, y as f32 + 0.5);
+            if point_in_triangle(p, &verts) && mask.is_solid(x, y) {
+                overlap.push(p);
             }
         }
     }
 
-    if count == 0 {
+    if overlap.is_empty() {
         return;
     }
 
-    // Centroid of overlap relative to the ship: vector pointing into the
-    // surface. Negate for the contact normal pointing back toward the ship.
-    let avg = sum / count as f32;
+    let center: Vec2 =
+        overlap.iter().copied().fold(Vec2::ZERO, |a, b| a + b) / overlap.len() as f32;
+    let avg = center - ship.pos;
     let avg_len = avg.length();
-    let normal = if avg_len > f32::EPSILON {
+
+    // Centroid normal is reliable when the overlap is clearly off-centre.
+    // Deep embedment (centroid near ship CoM) suffers from grid-discretisation
+    // biases that can flip the direction; fall back to velocity-reverse.
+    let normal = if avg_len > SHIP_SIZE * 0.3 {
         -avg / avg_len
     } else {
-        // Fully embedded: nothing to project against. Push opposite the
-        // ship's motion, falling back to "up" when at rest.
         let v_len = ship.vel.length();
         if v_len > 1.0 {
             -ship.vel / v_len
@@ -785,10 +788,66 @@ fn resolve_ship_mask(ship: &mut Ship, mask: &BitMask, impact: &mut Option<WallIm
             Vec2::new(0.0, -1.0)
         }
     };
+    // Any downward-facing contact (overlap is below the CoM) is treated as
+    // floor: snap the normal straight up. A single corner poking the floor
+    // gives a diagonal centroid normal, and pushing position along that
+    // diagonal frame after frame walks the ship sideways at rest.
+    let normal = if normal.y < 0.0 {
+        Vec2::new(0.0, -1.0)
+    } else {
+        normal
+    };
 
-    let depth = (r - avg_len).max(0.0);
+    // Depth: walk each overlap pixel along the normal in 1-px steps until
+    // the sample is empty; take the maximum walk so every overlap pixel
+    // ends up at empty after the ship moves.
+    let max_steps = SHIP_SIZE as i32;
+    let mut depth = 0.0f32;
+    for p in &overlap {
+        for step in 1..=max_steps {
+            let pp = *p + normal * step as f32;
+            if !mask.is_solid(pp.x as i32, pp.y as i32) {
+                if (step as f32) > depth {
+                    depth = step as f32;
+                }
+                break;
+            }
+            if step == max_steps && (step as f32) > depth {
+                depth = step as f32;
+            }
+        }
+    }
+
+    if depth <= 0.0 {
+        return;
+    }
+
+    // Contact point = the overlap pixel deepest along -normal. Recorded
+    // before the ship moves so the response sees where contact actually was.
+    let contact = overlap
+        .iter()
+        .copied()
+        .max_by(|a, b| {
+            (*a - ship.pos)
+                .dot(-normal)
+                .partial_cmp(&(*b - ship.pos).dot(-normal))
+                .unwrap_or(core::cmp::Ordering::Equal)
+        })
+        .unwrap_or(ship.pos);
+
     ship.pos += normal * depth;
-    apply_contact(ship, ship.pos - normal * SHIP_RADIUS, normal, impact);
+    apply_contact(ship, contact, normal, impact);
+}
+
+/// Standard sign-of-cross test for point-in-triangle. Triangles are passed
+/// CCW or CW — we accept either by checking that all three signs agree.
+fn point_in_triangle(p: Vec2, t: &[Vec2; 3]) -> bool {
+    let s1 = (t[1] - t[0]).perp_dot(p - t[0]);
+    let s2 = (t[2] - t[1]).perp_dot(p - t[1]);
+    let s3 = (t[0] - t[2]).perp_dot(p - t[2]);
+    let pos = s1 >= 0.0 && s2 >= 0.0 && s3 >= 0.0;
+    let neg = s1 <= 0.0 && s2 <= 0.0 && s3 <= 0.0;
+    pos || neg
 }
 
 fn resolve_ship_pad(ship: &mut Ship, pad: &Rect, impact: &mut Option<WallImpact>) {
@@ -1111,10 +1170,17 @@ mod tests {
     }
 
     #[test]
-    fn default_level_has_walls_and_a_pad() {
+    fn default_level_has_borders_and_a_pad() {
         let level = Level::default();
         assert!(level.rects.iter().any(|r| r.kind == RectKind::Pad));
-        assert!(level.rects.iter().filter(|r| r.kind == RectKind::Wall).count() >= 4);
+        // Borders are now in the mask, not in rects.
+        assert!(level.mask.is_solid(640, 710), "floor should be solid in mask");
+        assert!(level.mask.is_solid(640, 5), "ceiling should be solid in mask");
+        assert!(level.mask.is_solid(5, 360), "left border should be solid in mask");
+        assert!(
+            level.mask.is_solid(level.size.x as i32 - 5, 360),
+            "right border should be solid in mask"
+        );
     }
 
     #[test]
@@ -1183,6 +1249,92 @@ mod tests {
             ship.shields
         );
         assert!(ship.alive);
+    }
+
+    #[test]
+    fn nose_first_ceiling_hit_no_penetration() {
+        // Park ship close to the ceiling (mask solid for y < 20), nose up,
+        // moving up fast. After the collision tick, no triangle vertex
+        // should be inside a solid mask pixel.
+        let mut world = world_with_ship(
+            Vec2::new(640.0, 40.0),
+            Vec2::new(0.0, -200.0),
+            UPRIGHT_ANGLE,
+        );
+        world.tick([Input::empty(), Input::empty()]);
+        let ship = &world.ships[0];
+        for v in ship.triangle_vertices().iter() {
+            assert!(
+                !world.level.mask.is_solid(v.x as i32, v.y as i32),
+                "vertex at {:?} stuck in solid mask after collision",
+                v
+            );
+        }
+    }
+
+    #[test]
+    fn tipped_ship_rests_flush_with_floor() {
+        // Place ship flat on its side just above the floor, drop softly.
+        // After settling, the lowest triangle vertex should be within ~2 px
+        // of the topmost solid floor pixel (y = 700) — no big gap.
+        let tipped = UPRIGHT_ANGLE + TIP_FLAT_ANGLE;
+        let mut world = world_with_ship(
+            Vec2::new(640.0, 680.0),
+            Vec2::new(0.0, 5.0),
+            tipped,
+        );
+        world.ships[0].tipped_over = true;
+        for _ in 0..200 {
+            world.tick([Input::empty(), Input::empty()]);
+        }
+        let ship = &world.ships[0];
+        let lowest_y = ship
+            .triangle_vertices()
+            .iter()
+            .map(|v| v.y)
+            .fold(f32::NEG_INFINITY, f32::max);
+        assert!(
+            (700.0 - lowest_y).abs() < 2.0,
+            "lowest vertex y = {}, expected ~700, gap = {}",
+            lowest_y,
+            700.0 - lowest_y
+        );
+    }
+
+    #[test]
+    fn tipped_ship_does_not_drift_on_floor() {
+        // Drop a tipped ship a touch off-flat onto the floor. A raw
+        // centroid normal would be diagonal (only one wing corner
+        // pokes the floor), and the resolver's diagonal push plus the
+        // diagonal friction tangent would walk the ship sideways frame
+        // after frame. With the floor-ish normal snapped to vertical
+        // the ship should rest in place until tipped damage kills it.
+        let off_flat = UPRIGHT_ANGLE + TIP_FLAT_ANGLE + 0.5;
+        let mut world = world_with_ship(
+            Vec2::new(640.0, 680.0),
+            Vec2::new(0.0, 5.0),
+            off_flat,
+        );
+        world.ships[0].tipped_over = true;
+
+        for _ in 0..30 {
+            world.tick([Input::empty(), Input::empty()]);
+        }
+        assert!(world.ships[0].alive);
+        let settled_x = world.ships[0].pos.x;
+
+        for _ in 0..60 {
+            world.tick([Input::empty(), Input::empty()]);
+            if !world.ships[0].alive {
+                break;
+            }
+        }
+        assert!(world.ships[0].alive, "ship died during measurement window");
+        let drift = (world.ships[0].pos.x - settled_x).abs();
+        assert!(
+            drift < 1.0,
+            "tipped ship drifted {drift} px after settling"
+        );
     }
 
     #[test]
