@@ -56,7 +56,6 @@ pub const TIP_FLAT_ANGLE: f32 = 1.962;
 pub const SETTLE_NORMAL_Y_MAX: f32 = -0.95;
 pub const SETTLE_VEL: f32 = 60.0;
 pub const SETTLE_AV: f32 = 2.0;
-pub const SETTLE_BASIN: f32 = 0.6;
 pub const SETTLE_RESTORING_RATE: f32 = 0.33;
 pub const SETTLE_AV_CAP: f32 = 1.5;
 pub const CHIP_DAMAGE_PER_BOUNCE: f32 = 1.5;
@@ -1080,12 +1079,10 @@ fn apply_contact(
             && ship.angular_vel.abs() < SETTLE_AV
         {
             let tilt = angle_diff(ship.angle, UPRIGHT_ANGLE);
-            let target = if tilt.abs() < SETTLE_BASIN {
+            let target = if tilt.abs() < TIP_OVER_ANGLE {
                 0.0
-            } else if (tilt.abs() - TIP_FLAT_ANGLE).abs() < SETTLE_BASIN {
-                tilt.signum() * TIP_FLAT_ANGLE
             } else {
-                tilt
+                tilt.signum() * TIP_FLAT_ANGLE
             };
             let err = tilt - target;
             if err.abs() > 0.0 {
