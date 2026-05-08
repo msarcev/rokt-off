@@ -3,6 +3,7 @@ pub mod menu;
 pub mod net;
 pub mod net_input;
 pub mod session;
+pub mod touch;
 
 #[cfg(not(target_arch = "wasm32"))]
 mod replay;
@@ -10,12 +11,16 @@ mod replay;
 use macroquad::prelude::*;
 use sim::{BitMask, DEFAULT_SEED, FUEL_MAX, Level, ParticleKind, RectKind, SHIELD_MAX, World};
 
+use std::cell::RefCell;
+use std::rc::Rc;
+
 use camera::FollowCamera;
-use session::{LobbyStatus, LocalSession, P2pRunner, Session, keyboard, no_input};
+use session::{LobbyStatus, LocalSession, P2pRunner, Session, no_input};
 #[cfg(not(target_arch = "wasm32"))]
 use session::SyncTestRunner;
+use touch::TouchInput;
 
-const FOLLOW_ZOOM: f32 = 2.0;
+const BASE_VIEW: f32 = 360.0;
 const FOLLOW_SMOOTHING: f32 = 8.0;
 
 #[derive(Clone, Copy, Debug)]
@@ -125,8 +130,18 @@ pub fn wasm_start() {
 enum AppState {
     Menu(menu::Menu),
     JoinEntry { buffer: String },
-    Lobby { runner: Option<Box<P2pRunner>>, room: String, role: Role },
-    Playing { mode: PlayMode, session: Box<dyn Session>, camera: FollowCamera },
+    Lobby {
+        runner: Option<Box<P2pRunner>>,
+        room: String,
+        role: Role,
+        touch: Rc<RefCell<TouchInput>>,
+    },
+    Playing {
+        mode: PlayMode,
+        session: Box<dyn Session>,
+        camera: FollowCamera,
+        touch: Rc<RefCell<TouchInput>>,
+    },
 }
 
 pub async fn run() {
@@ -163,13 +178,15 @@ pub async fn run() {
                         let world = fresh_world();
                         let mode = PlayMode::Local;
                         let camera = make_camera(&world, mode);
+                        let touch = make_touch();
                         AppState::Playing {
                             mode,
                             session: Box::new(LocalSession::new(
                                 world,
-                                [keyboard(), no_input()],
+                                [touch::input_source(touch.clone()), no_input()],
                             )),
                             camera,
+                            touch,
                         }
                     }
                     menu::MenuChoice::Host => start_lobby(Role::Host, make_room_code()),
@@ -187,7 +204,7 @@ pub async fn run() {
                     None
                 }
             }
-            AppState::Lobby { runner, room, role } => {
+            AppState::Lobby { runner, room, role, touch } => {
                 let r = runner.as_mut().expect("lobby runner present");
                 r.poll();
                 let status = r.lobby_status();
@@ -209,15 +226,22 @@ pub async fn run() {
                     let taken = runner.take().expect("runner taken once");
                     let mode = PlayMode::Net { local_handle };
                     let camera = make_camera(taken.world(), mode);
-                    Some(AppState::Playing { mode, session: taken, camera })
+                    Some(AppState::Playing {
+                        mode,
+                        session: taken,
+                        camera,
+                        touch: touch.clone(),
+                    })
                 } else {
                     None
                 }
             }
-            AppState::Playing { mode, session, camera } => {
+            AppState::Playing { mode, session, camera, touch } => {
                 if is_key_pressed(KeyCode::Escape) {
                     Some(AppState::Menu(menu::Menu::new()))
                 } else {
+                    note_keyboard_input(touch);
+
                     #[cfg(not(target_arch = "wasm32"))]
                     if let Some(r) = &replay
                         && is_key_pressed(KeyCode::R)
@@ -226,10 +250,13 @@ pub async fn run() {
                         let world = World::with_seed(Level::cave_02(), DEFAULT_SEED);
                         let r2 = r.clone();
                         *session = Box::new(
-                            LocalSession::new(world, [keyboard(), no_input()])
-                                .with_recorder(Box::new(move |inputs| {
-                                    r2.borrow_mut().record(inputs)
-                                })),
+                            LocalSession::new(
+                                world,
+                                [touch::input_source(touch.clone()), no_input()],
+                            )
+                            .with_recorder(Box::new(move |inputs| {
+                                r2.borrow_mut().record(inputs)
+                            })),
                         );
                         *camera = make_camera(session.world(), *mode);
                     }
@@ -237,8 +264,12 @@ pub async fn run() {
                     let dt = get_frame_time();
                     session.advance(dt);
                     let world = session.world();
+                    let sh = screen_height();
+                    let play_h = sh - hud_h_px(sh);
+                    let aspect = screen_width() / play_h;
+                    camera.view_size = view_size_for_aspect(aspect);
                     camera.update(followed_pos(world, *mode), level_size(world), dt);
-                    draw_playing(world, camera, show_mask);
+                    draw_playing(world, camera, &touch.borrow(), show_mask);
                     None
                 }
             }
@@ -265,20 +296,52 @@ fn level_size(world: &World) -> Vec2 {
     vec2(world.level.mask.width as f32, world.level.mask.height as f32)
 }
 
+fn hud_h_px(sh: f32) -> f32 {
+    (sh * HUD_H / TOTAL_H).floor()
+}
+
+fn view_size_for_aspect(aspect: f32) -> Vec2 {
+    if aspect >= 1.0 {
+        vec2(BASE_VIEW * aspect, BASE_VIEW)
+    } else {
+        vec2(BASE_VIEW, BASE_VIEW / aspect)
+    }
+}
+
 fn make_camera(world: &World, mode: PlayMode) -> FollowCamera {
     let pos = followed_pos(world, mode);
-    let mut cam = FollowCamera::new(pos, FOLLOW_ZOOM, FOLLOW_SMOOTHING);
+    // Initial view is a placeholder; the run loop overwrites it each frame
+    // before `update`. Use a sane 16:9 default so `snap_to`'s clamp produces
+    // a sensible first-frame target.
+    let initial_view = view_size_for_aspect(16.0 / 9.0);
+    let mut cam = FollowCamera::new(pos, initial_view, FOLLOW_SMOOTHING);
     cam.snap_to(pos, level_size(world));
     cam
+}
+
+fn make_touch() -> Rc<RefCell<TouchInput>> {
+    Rc::new(RefCell::new(TouchInput::new()))
+}
+
+fn note_keyboard_input(touch: &Rc<RefCell<TouchInput>>) {
+    if [KeyCode::Up, KeyCode::Left, KeyCode::Right, KeyCode::Space]
+        .iter()
+        .any(|k| is_key_pressed(*k))
+    {
+        touch.borrow_mut().note_keyboard_press();
+    }
 }
 
 fn start_lobby(role: Role, room: String) -> AppState {
     let url = room_url(&room);
     println!("[net] {role:?} room={room}");
+    let touch = make_touch();
+    let source = touch::input_source(touch.clone());
     AppState::Lobby {
-        runner: Some(Box::new(P2pRunner::new(fresh_world(), &url, keyboard()))),
+        runner: Some(Box::new(P2pRunner::new(fresh_world(), &url, source))),
         room,
         role,
+        touch,
     }
 }
 
@@ -305,19 +368,23 @@ fn initial_state(
         let world = fresh_world();
         let mode = PlayMode::Local;
         let camera = make_camera(&world, mode);
+        let touch = make_touch();
         return AppState::Playing {
             mode,
             session: Box::new(SyncTestRunner::new(world)),
             camera,
+            touch,
         };
     }
     if replay_flag {
-        use std::cell::RefCell;
-        use std::rc::Rc;
         let r = Rc::new(RefCell::new(replay::Replay::open()));
         let world = World::with_seed(Level::cave_02(), r.borrow().seed);
         let recorded = r.borrow().recorded.clone();
-        let mut local = LocalSession::new(world, [keyboard(), no_input()]);
+        let touch = make_touch();
+        let mut local = LocalSession::new(
+            world,
+            [touch::input_source(touch.clone()), no_input()],
+        );
         local.replay(&recorded);
         println!(
             "[replay] replayed {} ticks from {}",
@@ -329,7 +396,7 @@ fn initial_state(
         *replay = Some(r);
         let mode = PlayMode::Local;
         let camera = make_camera(local.world(), mode);
-        return AppState::Playing { mode, session: Box::new(local), camera };
+        return AppState::Playing { mode, session: Box::new(local), camera, touch };
     }
     AppState::Menu(menu::Menu::new())
 }
@@ -401,23 +468,20 @@ fn draw_lobby(room: &str, role: Role, status: LobbyStatus) {
     draw_centered(hint, sw, sh * 0.78, 20, PAPER);
 }
 
-fn draw_playing(world: &World, camera: &FollowCamera, show_mask: bool) {
+fn draw_playing(world: &World, camera: &FollowCamera, touch: &TouchInput, show_mask: bool) {
     let sw = screen_width();
     let sh = screen_height();
     let dpi = screen_dpi_scale();
 
-    let hud_h_px = (sh * HUD_H / TOTAL_H).floor();
-    let avail_h = sh - hud_h_px;
-    let play_scale = (sw / PLAY_W).min(avail_h / PLAY_H);
-    let play_w_px = PLAY_W * play_scale;
-    let play_h_px = PLAY_H * play_scale;
-    let play_off_x = ((sw - play_w_px) * 0.5).floor();
-    let play_off_y = ((avail_h - play_h_px) * 0.5).floor();
+    let hud_px = hud_h_px(sh);
+    let play_w_px = sw;
+    let play_h_px = sh - hud_px;
 
-    let vp_y = sh - play_off_y - play_h_px;
+    // GL viewport origin is bottom-left; HUD sits at the bottom of the
+    // screen in CSS coords, so the play region's GL y-origin is `hud_px`.
     let cam = camera.macroquad_camera((
-        (play_off_x * dpi) as i32,
-        (vp_y * dpi) as i32,
+        0,
+        (hud_px * dpi) as i32,
         (play_w_px * dpi) as i32,
         (play_h_px * dpi) as i32,
     ));
@@ -438,7 +502,8 @@ fn draw_playing(world: &World, camera: &FollowCamera, show_mask: bool) {
     draw_bullets(world);
     draw_particles(world);
     set_default_camera();
-    draw_hud(world, 0.0, sh - hud_h_px, sw, hud_h_px, hud_h_px / HUD_H);
+    draw_hud(world, 0.0, sh - hud_px, sw, hud_px, hud_px / HUD_H);
+    touch.draw_overlay();
 }
 
 fn draw_level(level: &Level) {
