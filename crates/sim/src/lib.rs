@@ -240,6 +240,20 @@ impl BitMask {
         }
         mask
     }
+
+    /// Decode a PNG and treat any non-transparent pixel as solid.
+    pub fn from_png_bytes(bytes: &[u8]) -> Result<Self, image::ImageError> {
+        let img = image::load_from_memory_with_format(bytes, image::ImageFormat::Png)?;
+        let rgba = img.to_rgba8();
+        let (w, h) = rgba.dimensions();
+        let mut mask = Self::new(w, h, false);
+        for (x, y, pixel) in rgba.enumerate_pixels() {
+            if pixel.0[3] != 0 {
+                mask.set(x as i32, y as i32, true);
+            }
+        }
+        Ok(mask)
+    }
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -1163,6 +1177,29 @@ mod tests {
         assert!(level.mask.is_solid(5, 360));
         assert!(level.mask.is_solid(-1, 360));
         assert!(level.mask.is_solid(640, 9999));
+    }
+
+    #[test]
+    fn bitmask_from_png_uses_alpha() {
+        use image::{Rgba, RgbaImage};
+        use std::io::Cursor;
+
+        let mut img = RgbaImage::new(4, 1);
+        img.put_pixel(0, 0, Rgba([0, 0, 0, 255]));
+        img.put_pixel(1, 0, Rgba([0, 0, 0, 0]));
+        img.put_pixel(2, 0, Rgba([255, 255, 255, 1]));
+        img.put_pixel(3, 0, Rgba([255, 0, 0, 0]));
+
+        let mut buf = Vec::new();
+        img.write_to(&mut Cursor::new(&mut buf), image::ImageFormat::Png).unwrap();
+
+        let mask = BitMask::from_png_bytes(&buf).unwrap();
+        assert_eq!((mask.width, mask.height), (4, 1));
+        assert!(mask.is_solid(0, 0));
+        assert!(!mask.is_solid(1, 0));
+        assert!(mask.is_solid(2, 0));
+        assert!(!mask.is_solid(3, 0));
+        assert!(mask.is_solid(-1, 0));
     }
 
     #[test]
