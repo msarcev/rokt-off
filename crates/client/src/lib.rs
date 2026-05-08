@@ -1,3 +1,4 @@
+pub mod camera;
 pub mod menu;
 pub mod net;
 pub mod net_input;
@@ -9,9 +10,28 @@ mod replay;
 use macroquad::prelude::*;
 use sim::{BitMask, DEFAULT_SEED, FUEL_MAX, Level, ParticleKind, RectKind, SHIELD_MAX, World};
 
-use session::{LobbyStatus, LocalSession, P2pRunner, Session};
+use camera::FollowCamera;
+use session::{LobbyStatus, LocalSession, P2pRunner, Session, keyboard, no_input};
 #[cfg(not(target_arch = "wasm32"))]
 use session::SyncTestRunner;
+
+const FOLLOW_ZOOM: f32 = 2.0;
+const FOLLOW_SMOOTHING: f32 = 8.0;
+
+#[derive(Clone, Copy, Debug)]
+pub enum PlayMode {
+    Local,
+    Net { local_handle: usize },
+}
+
+impl PlayMode {
+    fn followed_ship(self) -> usize {
+        match self {
+            PlayMode::Local => 0,
+            PlayMode::Net { local_handle } => local_handle,
+        }
+    }
+}
 
 const SIGNALING_BASE: &str = match option_env!("ROKTOFF_SIGNALING_URL") {
     Some(s) => s,
@@ -106,7 +126,7 @@ enum AppState {
     Menu(menu::Menu),
     JoinEntry { buffer: String },
     Lobby { runner: Option<Box<P2pRunner>>, room: String, role: Role },
-    Playing { is_net: bool, session: Box<dyn Session> },
+    Playing { mode: PlayMode, session: Box<dyn Session>, camera: FollowCamera },
 }
 
 pub async fn run() {
@@ -139,10 +159,19 @@ pub async fn run() {
                 menu.tick();
                 menu.draw();
                 menu.take_choice().map(|choice| match choice {
-                    menu::MenuChoice::Local => AppState::Playing {
-                        is_net: false,
-                        session: Box::new(LocalSession::new(fresh_world())),
-                    },
+                    menu::MenuChoice::Local => {
+                        let world = fresh_world();
+                        let mode = PlayMode::Local;
+                        let camera = make_camera(&world, mode);
+                        AppState::Playing {
+                            mode,
+                            session: Box::new(LocalSession::new(
+                                world,
+                                [keyboard(), no_input()],
+                            )),
+                            camera,
+                        }
+                    }
                     menu::MenuChoice::Host => start_lobby(Role::Host, make_room_code()),
                     menu::MenuChoice::Join => AppState::JoinEntry { buffer: String::new() },
                 })
@@ -173,13 +202,19 @@ pub async fn run() {
                     };
                     Some(start_lobby(*role, new_room))
                 } else if status.ready {
+                    let local_handle = runner
+                        .as_ref()
+                        .and_then(|r| r.local_handle())
+                        .expect("local handle set when ready");
                     let taken = runner.take().expect("runner taken once");
-                    Some(AppState::Playing { is_net: true, session: taken })
+                    let mode = PlayMode::Net { local_handle };
+                    let camera = make_camera(taken.world(), mode);
+                    Some(AppState::Playing { mode, session: taken, camera })
                 } else {
                     None
                 }
             }
-            AppState::Playing { is_net, session } => {
+            AppState::Playing { mode, session, camera } => {
                 if is_key_pressed(KeyCode::Escape) {
                     Some(AppState::Menu(menu::Menu::new()))
                 } else {
@@ -191,14 +226,19 @@ pub async fn run() {
                         let world = World::with_seed(Level::cave_02(), DEFAULT_SEED);
                         let r2 = r.clone();
                         *session = Box::new(
-                            LocalSession::new(world).with_recorder(Box::new(move |inputs| {
-                                r2.borrow_mut().record(inputs)
-                            })),
+                            LocalSession::new(world, [keyboard(), no_input()])
+                                .with_recorder(Box::new(move |inputs| {
+                                    r2.borrow_mut().record(inputs)
+                                })),
                         );
+                        *camera = make_camera(session.world(), *mode);
                     }
 
-                    session.advance(get_frame_time());
-                    draw_playing(session.world(), *is_net, show_mask);
+                    let dt = get_frame_time();
+                    session.advance(dt);
+                    let world = session.world();
+                    camera.update(followed_pos(world, *mode), level_size(world), dt);
+                    draw_playing(world, camera, show_mask);
                     None
                 }
             }
@@ -216,11 +256,27 @@ fn fresh_world() -> World {
     World::with_seed(Level::cave_02(), DEFAULT_SEED)
 }
 
+fn followed_pos(world: &World, mode: PlayMode) -> Vec2 {
+    let p = world.ships[mode.followed_ship()].pos;
+    vec2(p.x, p.y)
+}
+
+fn level_size(world: &World) -> Vec2 {
+    vec2(world.level.mask.width as f32, world.level.mask.height as f32)
+}
+
+fn make_camera(world: &World, mode: PlayMode) -> FollowCamera {
+    let pos = followed_pos(world, mode);
+    let mut cam = FollowCamera::new(pos, FOLLOW_ZOOM, FOLLOW_SMOOTHING);
+    cam.snap_to(pos, level_size(world));
+    cam
+}
+
 fn start_lobby(role: Role, room: String) -> AppState {
     let url = room_url(&room);
     println!("[net] {role:?} room={room}");
     AppState::Lobby {
-        runner: Some(Box::new(P2pRunner::new(fresh_world(), &url))),
+        runner: Some(Box::new(P2pRunner::new(fresh_world(), &url, keyboard()))),
         room,
         role,
     }
@@ -246,9 +302,13 @@ fn initial_state(
     }
     if sync_test {
         println!("[sync-test] rollback validator engaged; check_distance=4");
+        let world = fresh_world();
+        let mode = PlayMode::Local;
+        let camera = make_camera(&world, mode);
         return AppState::Playing {
-            is_net: false,
-            session: Box::new(SyncTestRunner::new(fresh_world())),
+            mode,
+            session: Box::new(SyncTestRunner::new(world)),
+            camera,
         };
     }
     if replay_flag {
@@ -257,7 +317,7 @@ fn initial_state(
         let r = Rc::new(RefCell::new(replay::Replay::open()));
         let world = World::with_seed(Level::cave_02(), r.borrow().seed);
         let recorded = r.borrow().recorded.clone();
-        let mut local = LocalSession::new(world);
+        let mut local = LocalSession::new(world, [keyboard(), no_input()]);
         local.replay(&recorded);
         println!(
             "[replay] replayed {} ticks from {}",
@@ -267,7 +327,9 @@ fn initial_state(
         let r2 = r.clone();
         local = local.with_recorder(Box::new(move |inputs| r2.borrow_mut().record(inputs)));
         *replay = Some(r);
-        return AppState::Playing { is_net: false, session: Box::new(local) };
+        let mode = PlayMode::Local;
+        let camera = make_camera(local.world(), mode);
+        return AppState::Playing { mode, session: Box::new(local), camera };
     }
     AppState::Menu(menu::Menu::new())
 }
@@ -339,7 +401,7 @@ fn draw_lobby(room: &str, role: Role, status: LobbyStatus) {
     draw_centered(hint, sw, sh * 0.78, 20, PAPER);
 }
 
-fn draw_playing(world: &World, is_net: bool, show_mask: bool) {
+fn draw_playing(world: &World, camera: &FollowCamera, show_mask: bool) {
     let sw = screen_width();
     let sh = screen_height();
     let dpi = screen_dpi_scale();
@@ -353,17 +415,12 @@ fn draw_playing(world: &World, is_net: bool, show_mask: bool) {
     let play_off_y = ((avail_h - play_h_px) * 0.5).floor();
 
     let vp_y = sh - play_off_y - play_h_px;
-    let cam = Camera2D {
-        target: vec2(PLAY_W / 2.0, PLAY_H / 2.0),
-        zoom: vec2(2.0 / PLAY_W, 2.0 / PLAY_H),
-        viewport: Some((
-            (play_off_x * dpi) as i32,
-            (vp_y * dpi) as i32,
-            (play_w_px * dpi) as i32,
-            (play_h_px * dpi) as i32,
-        )),
-        ..Default::default()
-    };
+    let cam = camera.macroquad_camera((
+        (play_off_x * dpi) as i32,
+        (vp_y * dpi) as i32,
+        (play_w_px * dpi) as i32,
+        (play_h_px * dpi) as i32,
+    ));
 
     clear_background(BLACK);
     set_camera(&cam);
@@ -381,7 +438,7 @@ fn draw_playing(world: &World, is_net: bool, show_mask: bool) {
     draw_bullets(world);
     draw_particles(world);
     set_default_camera();
-    draw_hud(world, 0.0, sh - hud_h_px, sw, hud_h_px, hud_h_px / HUD_H, is_net);
+    draw_hud(world, 0.0, sh - hud_h_px, sw, hud_h_px, hud_h_px / HUD_H);
 }
 
 fn draw_level(level: &Level) {
@@ -464,7 +521,7 @@ fn draw_particles(world: &World) {
     }
 }
 
-fn draw_hud(world: &World, x: f32, y: f32, w: f32, h: f32, s: f32, is_net: bool) {
+fn draw_hud(world: &World, x: f32, y: f32, w: f32, h: f32, s: f32) {
     let paper = Color::from_rgba(238, 232, 213, 255);
     let ink = Color::from_rgba(50, 45, 60, 230);
     let ink_soft = Color::from_rgba(50, 45, 60, 110);
@@ -503,11 +560,7 @@ fn draw_hud(world: &World, x: f32, y: f32, w: f32, h: f32, s: f32, is_net: bool)
         draw_pencil_bar(bar_x, bar_y_fuel, bar_w, bar_h, ship.fuel / FUEL_MAX, fuel_fill, ink, ink_soft, s);
     }
 
-    let legend = if is_net {
-        "Move: WASD or Arrows    Fire: F or Space"
-    } else {
-        "P1: WASD + F          P2: Arrows + Space"
-    };
+    let legend = "Move: Arrows    Fire: Space";
     let legend_size = 16.0 * s;
     let dim = measure_text(legend, None, legend_size as u16, 1.0);
     let legend_x = x + (w - dim.width) * 0.5;

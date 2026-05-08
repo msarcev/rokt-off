@@ -59,7 +59,7 @@ impl Menu {
             draw_rectangle_lines(r.x, r.y, r.w, r.h, 2.0, Color::from_rgba(238, 232, 213, 255));
 
             let label = match c {
-                MenuChoice::Local => "LOCAL 2P",
+                MenuChoice::Local => "LOCAL",
                 MenuChoice::Host => "HOST 1V1",
                 MenuChoice::Join => "JOIN 1V1",
             };

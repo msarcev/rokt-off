@@ -24,18 +24,24 @@ pub trait Session {
     fn world(&self) -> &World;
 }
 
-/// Single-machine, fixed-step. Polls the keyboard for both players directly.
+/// Pluggable input poller. Each tick the session calls it once per local
+/// slot to assemble the `Input` bitmask. Decoupling from `is_key_down`
+/// makes room for touch/joystick sources without forking the session code.
+pub type InputSource = Box<dyn FnMut() -> Input>;
+
+/// Single-machine, fixed-step. Reads inputs from two pluggable sources.
 /// Optionally records each input pair via the supplied callback (used for
 /// the `--replay` log).
 pub struct LocalSession {
     world: World,
     accumulator: f32,
+    sources: [InputSource; 2],
     on_tick: Option<Box<dyn FnMut([Input; 2])>>,
 }
 
 impl LocalSession {
-    pub fn new(world: World) -> Self {
-        Self { world, accumulator: 0.0, on_tick: None }
+    pub fn new(world: World, sources: [InputSource; 2]) -> Self {
+        Self { world, accumulator: 0.0, sources, on_tick: None }
     }
 
     pub fn with_recorder(mut self, f: Box<dyn FnMut([Input; 2])>) -> Self {
@@ -55,7 +61,7 @@ impl Session for LocalSession {
     fn advance(&mut self, frame_dt: f32) {
         self.accumulator += frame_dt;
         while self.accumulator >= sim::DT {
-            let inputs = [poll_input_p1(), poll_input_p2()];
+            let inputs = [(self.sources[0])(), (self.sources[1])()];
             self.world.tick(inputs);
             if let Some(cb) = self.on_tick.as_mut() {
                 cb(inputs);
@@ -107,12 +113,13 @@ impl SyncTestRunner {
     }
 
     fn step_one(&mut self) {
-        // Both players are local in synctest; we feed both inputs ourselves.
+        // Both players are local in synctest; only the followed ship (0)
+        // takes keyboard, the other rides on empty inputs.
         self.session
-            .add_local_input(0, NetInput::from(poll_input_p1()))
+            .add_local_input(0, NetInput::from(poll_keyboard()))
             .expect("add input p0");
         self.session
-            .add_local_input(1, NetInput::from(poll_input_p2()))
+            .add_local_input(1, NetInput::from(Input::empty()))
             .expect("add input p1");
         let requests = match self.session.advance_frame() {
             Ok(r) => r,
@@ -169,10 +176,11 @@ pub struct P2pRunner {
     world: World,
     accumulator: f32,
     local_handles: Vec<usize>,
+    local_source: InputSource,
 }
 
 impl P2pRunner {
-    pub fn new(world: World, room_url: &str) -> Self {
+    pub fn new(world: World, room_url: &str, local_source: InputSource) -> Self {
         let (socket, failed) = crate::net::open(room_url);
         Self {
             socket,
@@ -181,7 +189,14 @@ impl P2pRunner {
             world,
             accumulator: 0.0,
             local_handles: Vec::new(),
+            local_source,
         }
+    }
+
+    /// First local handle once the session is built — caller picks the ship
+    /// to follow with the camera. None until both peers connect.
+    pub fn local_handle(&self) -> Option<usize> {
+        self.local_handles.first().copied()
     }
 
     pub fn lobby_status(&self) -> LobbyStatus {
@@ -249,6 +264,7 @@ impl P2pRunner {
         world: &mut World,
         session: &mut P2PSession<GgrsConfig>,
         local_handles: &[usize],
+        local_source: &mut InputSource,
     ) {
         session.poll_remote_clients();
         for ev in session.events() {
@@ -258,10 +274,7 @@ impl P2pRunner {
             return;
         }
 
-        // Net play: each peer has their own keyboard, so accept either keyset
-        // (WASD+F or arrows+Space) regardless of which handle they got
-        // assigned by matchbox's player-id sort.
-        let i = poll_input_p1() | poll_input_p2();
+        let i = local_source();
         for &h in local_handles {
             if let Err(e) = session.add_local_input(h, NetInput::from(i)) {
                 eprintln!("[net] add_local_input handle={h}: {e:?}");
@@ -310,7 +323,12 @@ impl Session for P2pRunner {
         self.accumulator += frame_dt;
         let session = self.session.as_mut().expect("session present");
         while self.accumulator >= sim::DT {
-            Self::step_one(&mut self.world, session, &self.local_handles);
+            Self::step_one(
+                &mut self.world,
+                session,
+                &self.local_handles,
+                &mut self.local_source,
+            );
             self.accumulator -= sim::DT;
         }
     }
@@ -367,24 +385,19 @@ fn checksum_world(w: &World) -> u128 {
     h.finish() as u128
 }
 
-pub fn poll_input_p1() -> Input {
-    let mut input = Input::empty();
-    if is_key_down(KeyCode::W) {
-        input |= Input::THRUST;
-    }
-    if is_key_down(KeyCode::A) {
-        input |= Input::ROTATE_LEFT;
-    }
-    if is_key_down(KeyCode::D) {
-        input |= Input::ROTATE_RIGHT;
-    }
-    if is_key_down(KeyCode::F) {
-        input |= Input::FIRE;
-    }
-    input
+/// Arrows + Space — the only keyset. Feeds the followed ship in every
+/// mode; the other slot in Local uses `no_input`.
+pub fn keyboard() -> InputSource {
+    Box::new(poll_keyboard)
 }
 
-pub fn poll_input_p2() -> Input {
+/// Empty input every tick. Used for slots no human is driving (ship 1 in
+/// Local single-follow, ship 1 in SyncTest).
+pub fn no_input() -> InputSource {
+    Box::new(|| Input::empty())
+}
+
+pub fn poll_keyboard() -> Input {
     let mut input = Input::empty();
     if is_key_down(KeyCode::Up) {
         input |= Input::THRUST;
