@@ -21,7 +21,7 @@ impl Replay {
         let (seed, recorded) = match File::open(&path) {
             Ok(mut f) => {
                 let mut buf = Vec::new();
-                f.read_to_end(&mut buf).expect("read dev.bin");
+                f.read_to_end(&mut buf).expect("read replay.bin");
                 if buf.len() >= 8 {
                     let seed = u64::from_le_bytes(buf[0..8].try_into().unwrap());
                     let recorded = buf[8..]
@@ -37,14 +37,14 @@ impl Replay {
         };
 
         if recorded.is_empty() {
-            let mut f = File::create(&path).expect("create dev.bin");
+            let mut f = File::create(&path).expect("create replay.bin");
             f.write_all(&seed.to_le_bytes()).expect("write seed");
         }
 
         let file = OpenOptions::new()
             .append(true)
             .open(&path)
-            .expect("open dev.bin for append");
+            .expect("open replay.bin for append");
 
         Self { path, file, seed, recorded }
     }
@@ -54,12 +54,12 @@ impl Replay {
     }
 
     pub fn reset(&mut self) {
-        let mut f = File::create(&self.path).expect("truncate dev.bin");
+        let mut f = File::create(&self.path).expect("truncate replay.bin");
         f.write_all(&DEFAULT_SEED.to_le_bytes()).expect("write seed");
         self.file = OpenOptions::new()
             .append(true)
             .open(&self.path)
-            .expect("reopen dev.bin");
+            .expect("reopen replay.bin");
         self.seed = DEFAULT_SEED;
         self.recorded.clear();
         println!("[replay] reset");
@@ -70,6 +70,6 @@ fn replay_path() -> PathBuf {
     let exe = std::env::current_exe().expect("current_exe");
     exe.parent()
         .and_then(|p| p.parent())
-        .map(|target| target.join("dev.bin"))
-        .unwrap_or_else(|| PathBuf::from("target/dev.bin"))
+        .map(|target| target.join("replay.bin"))
+        .unwrap_or_else(|| PathBuf::from("target/replay.bin"))
 }
