@@ -805,15 +805,26 @@ fn resolve_ship_mask(ship: &mut Ship, mask: &BitMask, impact: &mut Option<WallIm
         return;
     }
 
-    let center: Vec2 =
-        overlap.iter().copied().fold(Vec2::ZERO, |a, b| a + b) / overlap.len() as f32;
-    let avg = center - ship.pos;
-    let avg_len = avg.length();
-
-    // Deep embedment (centroid near CoM) gets grid-bias flips; fall back to
-    // velocity-reverse there.
-    let normal = if avg_len > SHIP_SIZE * 0.3 {
-        -avg / avg_len
+    // Per-pixel boundary normal: for each overlap pixel, use its 4-neighbour
+    // gradient to point away from solid. Interior pixels (all neighbours
+    // solid) abstain. Average the per-pixel normals.
+    let mut grad_sum = Vec2::ZERO;
+    let mut boundary_count = 0;
+    for p in &overlap {
+        let x = p.x as i32;
+        let y = p.y as i32;
+        let s_l = mask.is_solid(x - 1, y) as i32;
+        let s_r = mask.is_solid(x + 1, y) as i32;
+        let s_u = mask.is_solid(x, y - 1) as i32;
+        let s_d = mask.is_solid(x, y + 1) as i32;
+        let g = Vec2::new((s_r - s_l) as f32, (s_d - s_u) as f32);
+        if g.length_squared() > 0.0 {
+            grad_sum -= g.normalize();
+            boundary_count += 1;
+        }
+    }
+    let normal = if boundary_count > 0 && grad_sum.length_squared() > 0.0 {
+        grad_sum.normalize()
     } else {
         let v_len = ship.vel.length();
         if v_len > 1.0 {
@@ -821,13 +832,6 @@ fn resolve_ship_mask(ship: &mut Ship, mask: &BitMask, impact: &mut Option<WallIm
         } else {
             Vec2::new(0.0, -1.0)
         }
-    };
-    // Any downward-facing contact is treated as floor: a diagonal centroid
-    // normal pushes position sideways frame after frame at rest.
-    let normal = if normal.y < 0.0 {
-        Vec2::new(0.0, -1.0)
-    } else {
-        normal
     };
 
     let max_steps = SHIP_SIZE as i32;
