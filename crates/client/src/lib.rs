@@ -255,7 +255,7 @@ fn initial_state(
         use std::cell::RefCell;
         use std::rc::Rc;
         let r = Rc::new(RefCell::new(replay::Replay::open()));
-        let world = World::with_seed(Level::cave_01(), r.borrow().seed);
+        let world = World::with_seed(Level::cave_02(), r.borrow().seed);
         let recorded = r.borrow().recorded.clone();
         let mut local = LocalSession::new(world);
         local.replay(&recorded);
