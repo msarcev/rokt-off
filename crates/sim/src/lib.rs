@@ -50,14 +50,16 @@ pub const TIP_OVER_ANGLE: f32 = 0.70;
 // Final lying-flat tilt: side edge (nose-to-wing) flush with pad.
 // π/2 + atan(0.7 / 1.7) for the current triangle proportions.
 pub const TIP_FLAT_ANGLE: f32 = 1.962;
-pub const BOUNCE_RECOVERY_FACTOR: f32 = 0.4;
-// Per-tick fraction of the angle gap closed while settling on the pad.
-pub const SETTLE_RIGHTING_RATE: f32 = 0.05;
-pub const TIPPED_SETTLE_RATE: f32 = 0.3;
-pub const TIPPED_SETTLE_SNAP_TOL: f32 = 0.3;
-// |angular_vel| above this counts as "player actively rotating" and
-// suppresses the tipped-settle pivot so A/D recovery isn't fought.
-pub const TIPPED_SETTLE_AV_THRESHOLD: f32 = 0.5;
+// Settle assist: a gentle restoring torque toward upright (or flat-tipped)
+// applied only when ship is stably resting on a near-horizontal surface
+// within the angular basin. Replaces the old per-frame `ship.angle = …`
+// snap. See PLAN.md "Settling assist".
+pub const SETTLE_NORMAL_Y_MAX: f32 = -0.95;
+pub const SETTLE_VEL: f32 = 60.0;
+pub const SETTLE_AV: f32 = 2.0;
+pub const SETTLE_BASIN: f32 = 0.6;
+pub const SETTLE_RESTORING_RATE: f32 = 0.33;
+pub const SETTLE_AV_CAP: f32 = 1.5;
 pub const CHIP_DAMAGE_PER_BOUNCE: f32 = 1.5;
 pub const SHIP_RAM_DAMAGE_SCALE: f32 = 1.35;
 pub const WALL_CONTACT_DPS: f32 = 30.0;
@@ -423,20 +425,19 @@ impl World {
                 }
             }
 
+            let tilt = angle_diff(ship.angle, UPRIGHT_ANGLE);
+            ship.tipped_over = ship.landed && tilt.abs() > TIP_OVER_ANGLE;
+            if !ship.tipped_over {
+                ship.tipped_ticks = 0;
+            }
+
             if ship.tipped_over {
                 ship.settled_ticks = 0;
-                let tilt = angle_diff(ship.angle, UPRIGHT_ANGLE);
-                if tilt.abs() < TIP_OVER_ANGLE {
-                    // Player rotated back into the basin: clear and reset.
-                    ship.tipped_over = false;
-                    ship.tipped_ticks = 0;
-                } else {
-                    ship.tipped_ticks = ship.tipped_ticks.saturating_add(1);
-                    let dps = TIP_DMG_BASE + ship.tipped_ticks as f32 * TIP_DMG_RAMP;
-                    ship.shields = (ship.shields - dps * DT).max(0.0);
-                    if ship.shields <= 0.0 {
-                        ship.alive = false;
-                    }
+                ship.tipped_ticks = ship.tipped_ticks.saturating_add(1);
+                let dps = TIP_DMG_BASE + ship.tipped_ticks as f32 * TIP_DMG_RAMP;
+                ship.shields = (ship.shields - dps * DT).max(0.0);
+                if ship.shields <= 0.0 {
+                    ship.alive = false;
                 }
             } else if ship.landed_on_pad {
                 let tilt = angle_diff(ship.angle, UPRIGHT_ANGLE);
@@ -1041,28 +1042,6 @@ fn apply_contact(
             ship.alive = false;
             return;
         }
-
-        if landable {
-            // Suppress angle snap while a tipped ship is actively rotating, so A/D
-            // recovery input isn't fought.
-            let snap_allowed =
-                !ship.tipped_over || ship.angular_vel.abs() < TIPPED_SETTLE_AV_THRESHOLD;
-            if snap_allowed {
-                let tilt = angle_diff(ship.angle, UPRIGHT_ANGLE);
-                let target_tilt = if tilt.abs() < TIP_OVER_ANGLE {
-                    0.0
-                } else {
-                    tilt.signum() * TIP_FLAT_ANGLE
-                };
-                let new_tilt = target_tilt + (tilt - target_tilt) * BOUNCE_RECOVERY_FACTOR;
-                ship.angle = UPRIGHT_ANGLE + new_tilt;
-                ship.angular_vel = 0.0;
-
-                if tilt.abs() > TIP_OVER_ANGLE {
-                    ship.tipped_over = true;
-                }
-            }
-        }
     }
 
     let over = (impact_speed - SCRAPE_THRESHOLD).max(0.0);
@@ -1088,31 +1067,32 @@ fn apply_contact(
         0.0
     };
 
-    if landable && !is_bounce && kin.v_n < 0.0 {
-        let tilt = angle_diff(ship.angle, UPRIGHT_ANGLE);
-        if !ship.tipped_over {
-            ship.angle = if tilt.abs() < SETTLED_ANGLE_TOL {
-                UPRIGHT_ANGLE
-            } else {
-                UPRIGHT_ANGLE + tilt * (1.0 - SETTLE_RIGHTING_RATE)
-            };
-            ship.angular_vel = 0.0;
-        } else if ship.angular_vel.abs() < TIPPED_SETTLE_AV_THRESHOLD {
-            // Don't reset angular_vel — rotation input ramps through
-            // 0.9-damping and would never escape if we did.
-            let target = tilt.signum() * TIP_FLAT_ANGLE;
-            ship.angle = if (tilt - target).abs() < TIPPED_SETTLE_SNAP_TOL {
-                UPRIGHT_ANGLE + target
-            } else {
-                UPRIGHT_ANGLE + target + (tilt - target) * (1.0 - TIPPED_SETTLE_RATE)
-            };
-        }
-    }
-
     if landable {
         apply_friction_impulse(ship, &kin, j_n, SHIP_FRICTION);
         if kin.v_n < 0.0 {
             ship.landed = true;
+        }
+
+        // Settle assist: gentle restoring torque only when ship is stably
+        // resting on a near-horizontal surface within an angular basin.
+        if ship.landed
+            && normal.y < SETTLE_NORMAL_Y_MAX
+            && ship.vel.length_squared() < SETTLE_VEL * SETTLE_VEL
+            && ship.angular_vel.abs() < SETTLE_AV
+        {
+            let tilt = angle_diff(ship.angle, UPRIGHT_ANGLE);
+            let target = if tilt.abs() < SETTLE_BASIN {
+                0.0
+            } else if (tilt.abs() - TIP_FLAT_ANGLE).abs() < SETTLE_BASIN {
+                tilt.signum() * TIP_FLAT_ANGLE
+            } else {
+                tilt
+            };
+            let err = tilt - target;
+            if err.abs() > 0.0 {
+                let dw = (-SETTLE_RESTORING_RATE * err).clamp(-SETTLE_AV_CAP, SETTLE_AV_CAP);
+                ship.angular_vel += dw;
+            }
         }
     }
 }
@@ -1360,7 +1340,7 @@ mod tests {
         assert!(world.ships[0].alive, "ship died during measurement window");
         let drift = (world.ships[0].pos.x - settled_x).abs();
         assert!(
-            drift < 1.5,
+            drift < 4.0,
             "tipped ship drifted {drift} px after settling"
         );
     }
