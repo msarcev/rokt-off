@@ -6,3 +6,5 @@ Cargo.lock.bak
 .DS_Store
 CLAUDE.md
 PLAN.md
+/tools
+/assets/levels/raw
