@@ -50,10 +50,9 @@ pub const TIP_OVER_ANGLE: f32 = 0.70;
 // Final lying-flat tilt: side edge (nose-to-wing) flush with pad.
 // π/2 + atan(0.7 / 1.7) for the current triangle proportions.
 pub const TIP_FLAT_ANGLE: f32 = 1.962;
-// Settle assist: a gentle restoring torque toward upright (or flat-tipped)
-// applied only when ship is stably resting on a near-horizontal surface
-// within the angular basin. Replaces the old per-frame `ship.angle = …`
-// snap. See PLAN.md "Settling assist".
+// Settle assist: gentle restoring torque toward upright (or flat-tipped)
+// when the ship is stably resting on a near-horizontal surface within
+// the angular basin.
 pub const SETTLE_NORMAL_Y_MAX: f32 = -0.95;
 pub const SETTLE_VEL: f32 = 60.0;
 pub const SETTLE_AV: f32 = 2.0;
@@ -971,8 +970,8 @@ struct ContactKinematics {
 
 fn contact_kinematics(ship: &Ship, contact: Vec2, normal: Vec2) -> ContactKinematics {
     let r = contact - ship.pos;
-    let v_c = ship.vel + ship.angular_vel * Vec2::new(-r.y, r.x);
-    let tangent = Vec2::new(-normal.y, normal.x);
+    let v_c = ship.vel + ship.angular_vel * r.perp();
+    let tangent = normal.perp();
     ContactKinematics {
         r,
         tangent,
@@ -982,7 +981,7 @@ fn contact_kinematics(ship: &Ship, contact: Vec2, normal: Vec2) -> ContactKinema
 }
 
 fn apply_normal_impulse(ship: &mut Ship, kin: &ContactKinematics, normal: Vec2, e: f32) -> f32 {
-    let r_cross_n = kin.r.x * normal.y - kin.r.y * normal.x;
+    let r_cross_n = kin.r.perp_dot(normal);
     let k_n = 1.0 / SHIP_MASS + r_cross_n * r_cross_n / SHIP_INERTIA;
     let j_n = -(1.0 + e) * kin.v_n / k_n;
     ship.vel += normal * (j_n / SHIP_MASS);
@@ -991,7 +990,7 @@ fn apply_normal_impulse(ship: &mut Ship, kin: &ContactKinematics, normal: Vec2, 
 }
 
 fn apply_friction_impulse(ship: &mut Ship, kin: &ContactKinematics, j_n: f32, mu: f32) {
-    let r_cross_t = kin.r.x * kin.tangent.y - kin.r.y * kin.tangent.x;
+    let r_cross_t = kin.r.perp_dot(kin.tangent);
     let k_t = 1.0 / SHIP_MASS + r_cross_t * r_cross_t / SHIP_INERTIA;
     let j_t_max = mu * j_n.abs();
     let j_t = (-kin.v_t / k_t).clamp(-j_t_max, j_t_max);
