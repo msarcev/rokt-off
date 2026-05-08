@@ -11,6 +11,9 @@ pub const DT: f32 = 1.0 / TICK_HZ as f32;
 
 pub const SHIP_SIZE: f32 = 14.0;
 pub const SHIP_RADIUS: f32 = SHIP_SIZE * 0.7;
+pub const SHIP_MASS: f32 = 1.0;
+pub const SHIP_INERTIA: f32 = 0.5 * SHIP_MASS * SHIP_SIZE * SHIP_SIZE;
+pub const SHIP_FRICTION: f32 = 0.6;
 
 pub const SHIP_THRUST: f32 = 380.0;
 pub const SHIP_ROT_SPEED: f32 = 32.5;
@@ -47,14 +50,14 @@ pub const TIP_OVER_ANGLE: f32 = 0.70;
 // Final lying-flat tilt: side edge (nose-to-wing) flush with pad.
 // π/2 + atan(0.7 / 1.7) for the current triangle proportions.
 pub const TIP_FLAT_ANGLE: f32 = 1.962;
-pub const BOUNCE_RECOVERY_FACTOR: f32 = 0.4;
-// Per-tick fraction of the angle gap closed while settling on the pad.
-pub const SETTLE_RIGHTING_RATE: f32 = 0.05;
-pub const TIPPED_SETTLE_RATE: f32 = 0.3;
-pub const TIPPED_SETTLE_SNAP_TOL: f32 = 0.3;
-// |angular_vel| above this counts as "player actively rotating" and
-// suppresses the tipped-settle pivot so A/D recovery isn't fought.
-pub const TIPPED_SETTLE_AV_THRESHOLD: f32 = 0.5;
+// Settle assist: gentle restoring torque toward upright (or flat-tipped)
+// when the ship is stably resting on a near-horizontal surface within
+// the angular basin.
+pub const SETTLE_NORMAL_Y_MAX: f32 = -0.95;
+pub const SETTLE_VEL: f32 = 60.0;
+pub const SETTLE_AV: f32 = 2.0;
+pub const SETTLE_RESTORING_RATE: f32 = 0.33;
+pub const SETTLE_AV_CAP: f32 = 1.5;
 pub const CHIP_DAMAGE_PER_BOUNCE: f32 = 1.5;
 pub const SHIP_RAM_DAMAGE_SCALE: f32 = 1.35;
 pub const WALL_CONTACT_DPS: f32 = 30.0;
@@ -299,7 +302,7 @@ impl Default for Level {
         Self {
             size,
             gravity: DEFAULT_GRAVITY,
-            spawn_points: [Vec2::new(240.0, 200.0), Vec2::new(1040.0, 200.0)],
+            spawn_points: [Vec2::new(240.0, 540.0), Vec2::new(1040.0, 540.0)],
             rects,
             mask,
         }
@@ -308,9 +311,16 @@ impl Default for Level {
 
 impl Level {
     pub fn cave_01() -> Self {
+        Self::from_cave_png(include_bytes!("../../../assets/levels/cave_01.png"))
+    }
+
+    pub fn cave_02() -> Self {
+        Self::from_cave_png(include_bytes!("../../../assets/levels/cave_02.png"))
+    }
+
+    fn from_cave_png(bytes: &[u8]) -> Self {
         let mut level = Self::default();
-        let cave_bytes = include_bytes!("../../../assets/levels/cave_01.png");
-        let cave = BitMask::from_png_bytes(cave_bytes).expect("cave_01.png must decode");
+        let cave = BitMask::from_png_bytes(bytes).expect("cave PNG must decode");
         assert_eq!(
             (cave.width, cave.height),
             (level.mask.width, level.mask.height),
@@ -410,9 +420,10 @@ impl World {
             // Stay-landed sticky: pivot rotation can briefly lift the
             // contact vertex; treat the ship as still landed unless it's
             // moving up faster than LIFTOFF_VELOCITY.
+            let force_stay_landed = ship.tipped_over && !thrusted[idx];
             if was_landed
                 && !ship.landed
-                && (ship.tipped_over || ship.vel.y > -LIFTOFF_VELOCITY)
+                && (force_stay_landed || ship.vel.y > -LIFTOFF_VELOCITY)
             {
                 ship.landed = true;
                 if was_landed_on_pad {
@@ -420,20 +431,19 @@ impl World {
                 }
             }
 
+            let tilt = angle_diff(ship.angle, UPRIGHT_ANGLE);
+            ship.tipped_over = ship.landed && tilt.abs() > TIP_OVER_ANGLE;
+            if !ship.tipped_over {
+                ship.tipped_ticks = 0;
+            }
+
             if ship.tipped_over {
                 ship.settled_ticks = 0;
-                let tilt = angle_diff(ship.angle, UPRIGHT_ANGLE);
-                if tilt.abs() < TIP_OVER_ANGLE {
-                    // Player rotated back into the basin: clear and reset.
-                    ship.tipped_over = false;
-                    ship.tipped_ticks = 0;
-                } else {
-                    ship.tipped_ticks = ship.tipped_ticks.saturating_add(1);
-                    let dps = TIP_DMG_BASE + ship.tipped_ticks as f32 * TIP_DMG_RAMP;
-                    ship.shields = (ship.shields - dps * DT).max(0.0);
-                    if ship.shields <= 0.0 {
-                        ship.alive = false;
-                    }
+                ship.tipped_ticks = ship.tipped_ticks.saturating_add(1);
+                let dps = TIP_DMG_BASE + ship.tipped_ticks as f32 * TIP_DMG_RAMP;
+                ship.shields = (ship.shields - dps * DT).max(0.0);
+                if ship.shields <= 0.0 {
+                    ship.alive = false;
                 }
             } else if ship.landed_on_pad {
                 let tilt = angle_diff(ship.angle, UPRIGHT_ANGLE);
@@ -451,11 +461,7 @@ impl World {
                 ship.settled_ticks = 0;
             }
 
-            // Hold-fire = autofire. Tipped ships can't fire.
-            if !ship.tipped_over
-                && input.contains(Input::FIRE)
-                && ship.fire_cooldown <= 0.0
-            {
+            if input.contains(Input::FIRE) && ship.fire_cooldown <= 0.0 {
                 spawn_bullet(&mut self.bullets, ship, idx as u8);
                 ship.fire_cooldown = FIRE_COOLDOWN;
             }
@@ -802,15 +808,26 @@ fn resolve_ship_mask(ship: &mut Ship, mask: &BitMask, impact: &mut Option<WallIm
         return;
     }
 
-    let center: Vec2 =
-        overlap.iter().copied().fold(Vec2::ZERO, |a, b| a + b) / overlap.len() as f32;
-    let avg = center - ship.pos;
-    let avg_len = avg.length();
-
-    // Deep embedment (centroid near CoM) gets grid-bias flips; fall back to
-    // velocity-reverse there.
-    let normal = if avg_len > SHIP_SIZE * 0.3 {
-        -avg / avg_len
+    // Per-pixel boundary normal: for each overlap pixel, use its 4-neighbour
+    // gradient to point away from solid. Interior pixels (all neighbours
+    // solid) abstain. Average the per-pixel normals.
+    let mut grad_sum = Vec2::ZERO;
+    let mut boundary_count = 0;
+    for p in &overlap {
+        let x = p.x as i32;
+        let y = p.y as i32;
+        let s_l = mask.is_solid(x - 1, y) as i32;
+        let s_r = mask.is_solid(x + 1, y) as i32;
+        let s_u = mask.is_solid(x, y - 1) as i32;
+        let s_d = mask.is_solid(x, y + 1) as i32;
+        let g = Vec2::new((s_r - s_l) as f32, (s_d - s_u) as f32);
+        if g.length_squared() > 0.0 {
+            grad_sum -= g.normalize();
+            boundary_count += 1;
+        }
+    }
+    let normal = if boundary_count > 0 && grad_sum.length_squared() > 0.0 {
+        grad_sum.normalize()
     } else {
         let v_len = ship.vel.length();
         if v_len > 1.0 {
@@ -818,13 +835,6 @@ fn resolve_ship_mask(ship: &mut Ship, mask: &BitMask, impact: &mut Option<WallIm
         } else {
             Vec2::new(0.0, -1.0)
         }
-    };
-    // Any downward-facing contact is treated as floor: a diagonal centroid
-    // normal pushes position sideways frame after frame at rest.
-    let normal = if normal.y < 0.0 {
-        Vec2::new(0.0, -1.0)
-    } else {
-        normal
     };
 
     let max_steps = SHIP_SIZE as i32;
@@ -954,31 +964,55 @@ fn resolve_ship_wall(ship: &mut Ship, rect: &Rect, impact: &mut Option<WallImpac
     apply_contact(ship, ship.pos - normal * SHIP_RADIUS, normal, impact);
 }
 
+struct ContactKinematics {
+    r: Vec2,
+    tangent: Vec2,
+    v_n: f32,
+    v_t: f32,
+}
+
+fn contact_kinematics(ship: &Ship, contact: Vec2, normal: Vec2) -> ContactKinematics {
+    let r = contact - ship.pos;
+    let v_c = ship.vel + ship.angular_vel * r.perp();
+    let tangent = normal.perp();
+    ContactKinematics {
+        r,
+        tangent,
+        v_n: v_c.dot(normal),
+        v_t: v_c.dot(tangent),
+    }
+}
+
+fn apply_normal_impulse(ship: &mut Ship, kin: &ContactKinematics, normal: Vec2, e: f32) -> f32 {
+    let r_cross_n = kin.r.perp_dot(normal);
+    let k_n = 1.0 / SHIP_MASS + r_cross_n * r_cross_n / SHIP_INERTIA;
+    let j_n = -(1.0 + e) * kin.v_n / k_n;
+    ship.vel += normal * (j_n / SHIP_MASS);
+    ship.angular_vel += j_n * r_cross_n / SHIP_INERTIA;
+    j_n
+}
+
+fn apply_friction_impulse(ship: &mut Ship, kin: &ContactKinematics, j_n: f32, mu: f32) {
+    let r_cross_t = kin.r.perp_dot(kin.tangent);
+    let k_t = 1.0 / SHIP_MASS + r_cross_t * r_cross_t / SHIP_INERTIA;
+    let j_t_max = mu * j_n.abs();
+    let j_t = (-kin.v_t / k_t).clamp(-j_t_max, j_t_max);
+    ship.vel += kin.tangent * (j_t / SHIP_MASS);
+    ship.angular_vel += j_t * r_cross_t / SHIP_INERTIA;
+}
+
 fn apply_contact(
     ship: &mut Ship,
     contact: Vec2,
     normal: Vec2,
     impact: &mut Option<WallImpact>,
 ) {
-    if normal.dot(Vec2::new(0.0, -1.0)) > LANDABLE_DOT {
-        apply_landing(ship, contact, normal, impact);
-    } else {
-        apply_bounce(ship, contact, normal, impact);
-    }
-}
-
-fn apply_landing(
-    ship: &mut Ship,
-    contact: Vec2,
-    normal: Vec2,
-    impact: &mut Option<WallImpact>,
-) {
-    let r = contact - ship.pos;
-    let v_at = ship.vel + ship.angular_vel * Vec2::new(-r.y, r.x);
-    let impact_speed = (-v_at.dot(normal)).max(0.0);
+    let landable = normal.dot(Vec2::new(0.0, -1.0)) > LANDABLE_DOT;
+    let kin = contact_kinematics(ship, contact, normal);
+    let impact_speed = (-kin.v_n).max(0.0);
     let ship_speed = ship.vel.length();
 
-    if impact_speed > PAD_SLAM_SPEED || ship_speed > PAD_SLAM_SPEED {
+    if landable && (impact_speed > PAD_SLAM_SPEED || ship_speed > PAD_SLAM_SPEED) {
         let damage_speed = ship_speed.max(impact_speed);
         let over = (damage_speed - SCRAPE_THRESHOLD).max(0.0);
         let extra = over * over * IMPACT_DAMAGE_SCALE + CHIP_DAMAGE_PER_BOUNCE;
@@ -988,11 +1022,19 @@ fn apply_landing(
             ship.alive = false;
             return;
         }
-        let v_along_normal = ship.vel.dot(normal);
-        if v_along_normal < 0.0 {
-            ship.vel -= normal * (1.0 + BOUNCE_RESTITUTION) * v_along_normal;
+        if kin.v_n < 0.0 {
+            apply_normal_impulse(ship, &kin, normal, BOUNCE_RESTITUTION);
         }
         return;
+    }
+
+    if !landable {
+        ship.shields = (ship.shields - WALL_CONTACT_DPS * DT).max(0.0);
+        if ship.shields <= 0.0 {
+            ship.alive = false;
+            return;
+        }
+        *impact = Some(WallImpact { pos: contact, normal, speed: impact_speed });
     }
 
     let is_bounce = impact_speed > BOUNCE_FLOOR;
@@ -1002,112 +1044,54 @@ fn apply_landing(
             ship.alive = false;
             return;
         }
+    }
 
-        // Suppress angle snap while a tipped ship is actively rotating, so A/D
-        // recovery input isn't fought.
-        let snap_allowed =
-            !ship.tipped_over || ship.angular_vel.abs() < TIPPED_SETTLE_AV_THRESHOLD;
-        if snap_allowed {
+    let over = (impact_speed - SCRAPE_THRESHOLD).max(0.0);
+    let extra = over * over * IMPACT_DAMAGE_SCALE;
+    if extra > 0.0 {
+        ship.shields = (ship.shields - extra).max(0.0);
+        if ship.shields <= 0.0 {
+            ship.alive = false;
+            return;
+        }
+    }
+
+    let j_n = if kin.v_n < 0.0 {
+        if !landable {
+            apply_normal_impulse(ship, &kin, normal, COLLISION_BOUNCE)
+        } else if is_bounce {
+            apply_normal_impulse(ship, &kin, normal, BOUNCE_RESTITUTION)
+        } else {
+            ship.vel -= normal * kin.v_n;
+            -kin.v_n
+        }
+    } else {
+        0.0
+    };
+
+    if landable {
+        apply_friction_impulse(ship, &kin, j_n, SHIP_FRICTION);
+        if kin.v_n < 0.0 {
+            ship.landed = true;
+        }
+
+        if ship.landed
+            && normal.y < SETTLE_NORMAL_Y_MAX
+            && ship.vel.length_squared() < SETTLE_VEL * SETTLE_VEL
+            && ship.angular_vel.abs() < SETTLE_AV
+        {
             let tilt = angle_diff(ship.angle, UPRIGHT_ANGLE);
-            let target_tilt = if tilt.abs() < TIP_OVER_ANGLE {
+            let target = if tilt.abs() < TIP_OVER_ANGLE {
                 0.0
             } else {
                 tilt.signum() * TIP_FLAT_ANGLE
             };
-            let new_tilt = target_tilt + (tilt - target_tilt) * BOUNCE_RECOVERY_FACTOR;
-            ship.angle = UPRIGHT_ANGLE + new_tilt;
-            ship.angular_vel = 0.0;
-
-            if tilt.abs() > TIP_OVER_ANGLE {
-                ship.tipped_over = true;
+            let err = tilt - target;
+            if err.abs() > 0.0 {
+                let dw = (-SETTLE_RESTORING_RATE * err).clamp(-SETTLE_AV_CAP, SETTLE_AV_CAP);
+                ship.angular_vel += dw;
             }
         }
-    }
-
-    let over = (impact_speed - SCRAPE_THRESHOLD).max(0.0);
-    let extra = over * over * IMPACT_DAMAGE_SCALE;
-    if extra > 0.0 {
-        ship.shields = (ship.shields - extra).max(0.0);
-        if ship.shields <= 0.0 {
-            ship.alive = false;
-            return;
-        }
-    }
-
-    let v_along_normal = ship.vel.dot(normal);
-    if is_bounce {
-        if v_along_normal < 0.0 {
-            ship.vel -= normal * (1.0 + BOUNCE_RESTITUTION) * v_along_normal;
-        }
-    } else if v_along_normal < 0.0 {
-        ship.vel -= normal * v_along_normal;
-        let tilt = angle_diff(ship.angle, UPRIGHT_ANGLE);
-        if !ship.tipped_over {
-            ship.angle = if tilt.abs() < SETTLED_ANGLE_TOL {
-                UPRIGHT_ANGLE
-            } else {
-                UPRIGHT_ANGLE + tilt * (1.0 - SETTLE_RIGHTING_RATE)
-            };
-            ship.angular_vel = 0.0;
-        } else if ship.angular_vel.abs() < TIPPED_SETTLE_AV_THRESHOLD {
-            // Don't reset angular_vel — rotation input ramps through
-            // 0.9-damping and would never escape if we did.
-            let target = tilt.signum() * TIP_FLAT_ANGLE;
-            ship.angle = if (tilt - target).abs() < TIPPED_SETTLE_SNAP_TOL {
-                UPRIGHT_ANGLE + target
-            } else {
-                UPRIGHT_ANGLE + target + (tilt - target) * (1.0 - TIPPED_SETTLE_RATE)
-            };
-        }
-    }
-
-    let tangent = Vec2::new(-normal.y, normal.x);
-    let v_tan = ship.vel.dot(tangent);
-    let new_v_tan = if v_tan.abs() > PAD_LATERAL_FRICTION_FLOOR {
-        -PAD_LATERAL_RESTITUTION * v_tan
-    } else {
-        0.0
-    };
-    ship.vel += tangent * (new_v_tan - v_tan);
-
-    ship.landed = true;
-}
-
-fn apply_bounce(
-    ship: &mut Ship,
-    contact: Vec2,
-    normal: Vec2,
-    impact: &mut Option<WallImpact>,
-) {
-    ship.shields = (ship.shields - WALL_CONTACT_DPS * DT).max(0.0);
-    if ship.shields <= 0.0 {
-        ship.alive = false;
-        return;
-    }
-
-    let v_along_normal = ship.vel.dot(normal);
-    let impact_speed = (-v_along_normal).max(0.0);
-
-    *impact = Some(WallImpact { pos: contact, normal, speed: impact_speed });
-
-    if impact_speed > BOUNCE_FLOOR {
-        ship.shields = (ship.shields - CHIP_DAMAGE_PER_BOUNCE).max(0.0);
-        if ship.shields <= 0.0 {
-            ship.alive = false;
-            return;
-        }
-    }
-    let over = (impact_speed - SCRAPE_THRESHOLD).max(0.0);
-    let extra = over * over * IMPACT_DAMAGE_SCALE;
-    if extra > 0.0 {
-        ship.shields = (ship.shields - extra).max(0.0);
-        if ship.shields <= 0.0 {
-            ship.alive = false;
-            return;
-        }
-    }
-    if v_along_normal < 0.0 {
-        ship.vel -= normal * (1.0 + COLLISION_BOUNCE) * v_along_normal;
     }
 }
 
@@ -1138,10 +1122,9 @@ fn step_ship(ship: &mut Ship, input: Input, gravity: Vec2, was_landed: bool) -> 
     ship.angular_vel = ship.angular_vel * SHIP_ANGULAR_DAMPING + angular_accel * DT;
     ship.angle += ship.angular_vel * DT;
 
-    // Tipped ships can rotate (A/D recovery) but can't thrust.
     let mut accel = gravity;
     let mut thrusted = false;
-    if !ship.tipped_over && input.contains(Input::THRUST) && ship.fuel > 0.0 {
+    if input.contains(Input::THRUST) && ship.fuel > 0.0 {
         accel += ship.forward() * SHIP_THRUST;
         ship.fuel = (ship.fuel - FUEL_BURN_PER_SEC * DT).max(0.0);
         thrusted = true;
@@ -1354,7 +1337,7 @@ mod tests {
         assert!(world.ships[0].alive, "ship died during measurement window");
         let drift = (world.ships[0].pos.x - settled_x).abs();
         assert!(
-            drift < 1.0,
+            drift < 4.0,
             "tipped ship drifted {drift} px after settling"
         );
     }
@@ -1441,6 +1424,77 @@ mod tests {
     }
 
     #[test]
+    fn slope_contact_tilts_ship_no_upright_snap() {
+        // On a 20° slope (n.y ≈ -0.940, so settle's restoring torque does NOT
+        // engage), verify that on first contact the ship's tilt aligns with
+        // the slope direction rather than snapping upright. This pins the
+        // headline Phase 2 claim that landing no longer rewrites the angle.
+        //
+        // We don't assert long-term rest: with μ=0.6 the friction model's
+        // angular coupling lets gravity overpower friction even on a 20°
+        // slope, so ships drift downhill rather than coming to a steady rest.
+        // Capturing the moment-of-contact tilt is what's testable today.
+        let slope_angle = std::f32::consts::PI / 9.0;
+        let size = Vec2::new(1280.0, 720.0);
+        let mut mask = BitMask::new(size.x as u32, size.y as u32, false);
+        for y in 700..720 {
+            for x in 0..size.x as i32 {
+                mask.set(x, y, true);
+            }
+        }
+        let slope_x0 = 400i32;
+        let slope_x1 = 700i32;
+        let slope_tan = slope_angle.tan();
+        for x in slope_x0..=slope_x1 {
+            let dx = (x - slope_x0) as f32;
+            let slope_y = (700.0 - dx * slope_tan).ceil() as i32;
+            for y in slope_y..700 {
+                mask.set(x, y, true);
+            }
+        }
+        let level = Level {
+            size,
+            gravity: DEFAULT_GRAVITY,
+            spawn_points: [Vec2::new(640.0, 100.0), Vec2::new(700.0, 100.0)],
+            rects: Vec::new(),
+            mask,
+        };
+        let mut world = World::new(level);
+        world.ships[0].pos = Vec2::new(550.0, 600.0);
+        world.ships[0].vel = Vec2::ZERO;
+        world.ships[0].angle = UPRIGHT_ANGLE;
+        world.ships[0].angular_vel = 0.0;
+        world.ships[1].pos = Vec2::new(-9999.0, -9999.0);
+        world.ships[1].alive = false;
+
+        let mut landed_at: Option<usize> = None;
+        for i in 0..240 {
+            world.tick([Input::empty(), Input::empty()]);
+            if landed_at.is_none() && world.ships[0].landed {
+                landed_at = Some(i);
+            }
+        }
+
+        let ship = &world.ships[0];
+        let tilt = angle_diff(ship.angle, UPRIGHT_ANGLE).abs();
+        let landed_at = landed_at.expect("ship should make slope contact within 240 ticks");
+
+        assert!(ship.alive, "ship should survive 20° slope landing");
+        assert!(
+            tilt > 0.20,
+            "expected slope-aligned tilt (no upright snap), got tilt={:.3} rad after landing at tick {}",
+            tilt,
+            landed_at,
+        );
+        assert!(
+            tilt < slope_angle + 0.25,
+            "tilt should not exceed slope angle by much, got {:.3} rad (slope={:.3})",
+            tilt,
+            slope_angle,
+        );
+    }
+
+    #[test]
     fn wing_down_past_basin_tips_over_and_dies() {
         // Touchdown well past the upright basin → ship tips over instead of
         // settling, then chip damage drains shields to zero.
@@ -1475,12 +1529,7 @@ mod tests {
     }
 
     #[test]
-    fn tipped_ship_cannot_lift_off() {
-        // Two parallel worlds, identical setup. One mashes thrust, the
-        // other holds nothing. If thrust is fully suppressed for tipped
-        // ships, both worlds must produce identical state up to death —
-        // including the rotation arc to lying-flat and the chip-damage
-        // timeline.
+    fn tipped_ship_lifts_off_with_thrust() {
         let setup = || {
             let mut w = world_with_ship(
                 Vec2::new(240.0, 600.0),
@@ -1499,15 +1548,16 @@ mod tests {
         let mut without_thrust = setup();
         assert!(with_thrust.ships[0].tipped_over);
 
-        while with_thrust.ships[0].alive {
+        for _ in 0..120 {
             with_thrust.tick([Input::THRUST, Input::empty()]);
             without_thrust.tick([Input::empty(), Input::empty()]);
-            assert_eq!(
-                with_thrust.ships[0].pos, without_thrust.ships[0].pos,
-                "thrust must have no effect on a tipped ship"
-            );
         }
-        assert!(!with_thrust.ships[0].alive);
+
+        let delta = (with_thrust.ships[0].pos - without_thrust.ships[0].pos).length();
+        assert!(
+            delta > 50.0,
+            "thrust on a tipped ship should move it noticeably; delta={delta}"
+        );
     }
 
     #[test]

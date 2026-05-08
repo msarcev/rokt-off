@@ -188,7 +188,7 @@ pub async fn run() {
                         && is_key_pressed(KeyCode::R)
                     {
                         r.borrow_mut().reset();
-                        let world = World::with_seed(Level::cave_01(), DEFAULT_SEED);
+                        let world = World::with_seed(Level::cave_02(), DEFAULT_SEED);
                         let r2 = r.clone();
                         *session = Box::new(
                             LocalSession::new(world).with_recorder(Box::new(move |inputs| {
@@ -213,7 +213,7 @@ pub async fn run() {
 }
 
 fn fresh_world() -> World {
-    World::with_seed(Level::cave_01(), DEFAULT_SEED)
+    World::with_seed(Level::cave_02(), DEFAULT_SEED)
 }
 
 fn start_lobby(role: Role, room: String) -> AppState {
