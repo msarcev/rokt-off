@@ -954,6 +954,16 @@ fn resolve_ship_wall(ship: &mut Ship, rect: &Rect, impact: &mut Option<WallImpac
     apply_contact(ship, ship.pos - normal * SHIP_RADIUS, normal, impact);
 }
 
+/// Velocity of the material point on the ship at `contact`, projected onto
+/// `normal`. `v_com + ω × r` projected; in 2D, `ω × r = angular_vel ·
+/// (-r.y, r.x)`. Negative means the contact point is moving *into* the
+/// surface.
+fn contact_normal_velocity(ship: &Ship, contact: Vec2, normal: Vec2) -> f32 {
+    let r = contact - ship.pos;
+    let v_c = ship.vel + ship.angular_vel * Vec2::new(-r.y, r.x);
+    v_c.dot(normal)
+}
+
 fn apply_contact(
     ship: &mut Ship,
     contact: Vec2,
@@ -973,9 +983,7 @@ fn apply_landing(
     normal: Vec2,
     impact: &mut Option<WallImpact>,
 ) {
-    let r = contact - ship.pos;
-    let v_at = ship.vel + ship.angular_vel * Vec2::new(-r.y, r.x);
-    let impact_speed = (-v_at.dot(normal)).max(0.0);
+    let impact_speed = (-contact_normal_velocity(ship, contact, normal)).max(0.0);
     let ship_speed = ship.vel.length();
 
     if impact_speed > PAD_SLAM_SPEED || ship_speed > PAD_SLAM_SPEED {
