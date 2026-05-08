@@ -1427,6 +1427,77 @@ mod tests {
     }
 
     #[test]
+    fn slope_contact_tilts_ship_no_upright_snap() {
+        // On a 20° slope (n.y ≈ -0.940, so settle's restoring torque does NOT
+        // engage), verify that on first contact the ship's tilt aligns with
+        // the slope direction rather than snapping upright. This pins the
+        // headline Phase 2 claim that landing no longer rewrites the angle.
+        //
+        // We don't assert long-term rest: with μ=0.6 the friction model's
+        // angular coupling lets gravity overpower friction even on a 20°
+        // slope, so ships drift downhill rather than coming to a steady rest.
+        // Capturing the moment-of-contact tilt is what's testable today.
+        let slope_angle = std::f32::consts::PI / 9.0;
+        let size = Vec2::new(1280.0, 720.0);
+        let mut mask = BitMask::new(size.x as u32, size.y as u32, false);
+        for y in 700..720 {
+            for x in 0..size.x as i32 {
+                mask.set(x, y, true);
+            }
+        }
+        let slope_x0 = 400i32;
+        let slope_x1 = 700i32;
+        let slope_tan = slope_angle.tan();
+        for x in slope_x0..=slope_x1 {
+            let dx = (x - slope_x0) as f32;
+            let slope_y = (700.0 - dx * slope_tan).ceil() as i32;
+            for y in slope_y..700 {
+                mask.set(x, y, true);
+            }
+        }
+        let level = Level {
+            size,
+            gravity: DEFAULT_GRAVITY,
+            spawn_points: [Vec2::new(640.0, 100.0), Vec2::new(700.0, 100.0)],
+            rects: Vec::new(),
+            mask,
+        };
+        let mut world = World::new(level);
+        world.ships[0].pos = Vec2::new(550.0, 600.0);
+        world.ships[0].vel = Vec2::ZERO;
+        world.ships[0].angle = UPRIGHT_ANGLE;
+        world.ships[0].angular_vel = 0.0;
+        world.ships[1].pos = Vec2::new(-9999.0, -9999.0);
+        world.ships[1].alive = false;
+
+        let mut landed_at: Option<usize> = None;
+        for i in 0..240 {
+            world.tick([Input::empty(), Input::empty()]);
+            if landed_at.is_none() && world.ships[0].landed {
+                landed_at = Some(i);
+            }
+        }
+
+        let ship = &world.ships[0];
+        let tilt = angle_diff(ship.angle, UPRIGHT_ANGLE).abs();
+        let landed_at = landed_at.expect("ship should make slope contact within 240 ticks");
+
+        assert!(ship.alive, "ship should survive 20° slope landing");
+        assert!(
+            tilt > 0.20,
+            "expected slope-aligned tilt (no upright snap), got tilt={:.3} rad after landing at tick {}",
+            tilt,
+            landed_at,
+        );
+        assert!(
+            tilt < slope_angle + 0.25,
+            "tilt should not exceed slope angle by much, got {:.3} rad (slope={:.3})",
+            tilt,
+            slope_angle,
+        );
+    }
+
+    #[test]
     fn wing_down_past_basin_tips_over_and_dies() {
         // Touchdown well past the upright basin → ship tips over instead of
         // settling, then chip damage drains shields to zero.
