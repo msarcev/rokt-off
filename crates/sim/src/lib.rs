@@ -311,9 +311,12 @@ impl Default for Level {
 
 impl Level {
     pub fn cave_01() -> Self {
+        Self::from_cave_png(include_bytes!("../../../assets/levels/cave_01.png"))
+    }
+
+    fn from_cave_png(bytes: &[u8]) -> Self {
         let mut level = Self::default();
-        let cave_bytes = include_bytes!("../../../assets/levels/cave_01.png");
-        let cave = BitMask::from_png_bytes(cave_bytes).expect("cave_01.png must decode");
+        let cave = BitMask::from_png_bytes(bytes).expect("cave PNG must decode");
         assert_eq!(
             (cave.width, cave.height),
             (level.mask.width, level.mask.height),
