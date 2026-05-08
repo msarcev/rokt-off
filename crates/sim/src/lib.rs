@@ -954,14 +954,21 @@ fn resolve_ship_wall(ship: &mut Ship, rect: &Rect, impact: &mut Option<WallImpac
     apply_contact(ship, ship.pos - normal * SHIP_RADIUS, normal, impact);
 }
 
-/// Velocity of the material point on the ship at `contact`, projected onto
-/// `normal`. `v_com + ω × r` projected; in 2D, `ω × r = angular_vel ·
-/// (-r.y, r.x)`. Negative means the contact point is moving *into* the
-/// surface.
-fn contact_normal_velocity(ship: &Ship, contact: Vec2, normal: Vec2) -> f32 {
+struct ContactKinematics {
+    tangent: Vec2,
+    v_n: f32,
+    v_t: f32,
+}
+
+fn contact_kinematics(ship: &Ship, contact: Vec2, normal: Vec2) -> ContactKinematics {
     let r = contact - ship.pos;
     let v_c = ship.vel + ship.angular_vel * Vec2::new(-r.y, r.x);
-    v_c.dot(normal)
+    let tangent = Vec2::new(-normal.y, normal.x);
+    ContactKinematics {
+        tangent,
+        v_n: v_c.dot(normal),
+        v_t: v_c.dot(tangent),
+    }
 }
 
 fn apply_contact(
@@ -983,7 +990,8 @@ fn apply_landing(
     normal: Vec2,
     impact: &mut Option<WallImpact>,
 ) {
-    let impact_speed = (-contact_normal_velocity(ship, contact, normal)).max(0.0);
+    let kin = contact_kinematics(ship, contact, normal);
+    let impact_speed = (-kin.v_n).max(0.0);
     let ship_speed = ship.vel.length();
 
     if impact_speed > PAD_SLAM_SPEED || ship_speed > PAD_SLAM_SPEED {
@@ -996,9 +1004,8 @@ fn apply_landing(
             ship.alive = false;
             return;
         }
-        let v_along_normal = ship.vel.dot(normal);
-        if v_along_normal < 0.0 {
-            ship.vel -= normal * (1.0 + BOUNCE_RESTITUTION) * v_along_normal;
+        if kin.v_n < 0.0 {
+            ship.vel -= normal * (1.0 + BOUNCE_RESTITUTION) * kin.v_n;
         }
         return;
     }
@@ -1042,13 +1049,12 @@ fn apply_landing(
         }
     }
 
-    let v_along_normal = ship.vel.dot(normal);
     if is_bounce {
-        if v_along_normal < 0.0 {
-            ship.vel -= normal * (1.0 + BOUNCE_RESTITUTION) * v_along_normal;
+        if kin.v_n < 0.0 {
+            ship.vel -= normal * (1.0 + BOUNCE_RESTITUTION) * kin.v_n;
         }
-    } else if v_along_normal < 0.0 {
-        ship.vel -= normal * v_along_normal;
+    } else if kin.v_n < 0.0 {
+        ship.vel -= normal * kin.v_n;
         let tilt = angle_diff(ship.angle, UPRIGHT_ANGLE);
         if !ship.tipped_over {
             ship.angle = if tilt.abs() < SETTLED_ANGLE_TOL {
@@ -1069,14 +1075,12 @@ fn apply_landing(
         }
     }
 
-    let tangent = Vec2::new(-normal.y, normal.x);
-    let v_tan = ship.vel.dot(tangent);
-    let new_v_tan = if v_tan.abs() > PAD_LATERAL_FRICTION_FLOOR {
-        -PAD_LATERAL_RESTITUTION * v_tan
+    let new_v_tan = if kin.v_t.abs() > PAD_LATERAL_FRICTION_FLOOR {
+        -PAD_LATERAL_RESTITUTION * kin.v_t
     } else {
         0.0
     };
-    ship.vel += tangent * (new_v_tan - v_tan);
+    ship.vel += kin.tangent * (new_v_tan - kin.v_t);
 
     ship.landed = true;
 }
@@ -1093,8 +1097,8 @@ fn apply_bounce(
         return;
     }
 
-    let v_along_normal = ship.vel.dot(normal);
-    let impact_speed = (-v_along_normal).max(0.0);
+    let kin = contact_kinematics(ship, contact, normal);
+    let impact_speed = (-kin.v_n).max(0.0);
 
     *impact = Some(WallImpact { pos: contact, normal, speed: impact_speed });
 
@@ -1114,8 +1118,8 @@ fn apply_bounce(
             return;
         }
     }
-    if v_along_normal < 0.0 {
-        ship.vel -= normal * (1.0 + COLLISION_BOUNCE) * v_along_normal;
+    if kin.v_n < 0.0 {
+        ship.vel -= normal * (1.0 + COLLISION_BOUNCE) * kin.v_n;
     }
 }
 
