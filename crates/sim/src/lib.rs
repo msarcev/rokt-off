@@ -112,6 +112,7 @@ pub struct Ship {
     pub shields: f32,
     pub alive: bool,
     pub landed: bool,
+    pub landed_on_pad: bool,
     pub tipped_over: bool,
     pub tipped_ticks: u32,
     pub fire_cooldown: f32,
@@ -130,6 +131,7 @@ impl Ship {
             shields: SHIELD_MAX,
             alive: true,
             landed: false,
+            landed_on_pad: false,
             tipped_over: false,
             tipped_ticks: 0,
             fire_cooldown: 0.0,
@@ -304,6 +306,27 @@ impl Default for Level {
     }
 }
 
+impl Level {
+    pub fn cave_01() -> Self {
+        let mut level = Self::default();
+        let cave_bytes = include_bytes!("../../../assets/levels/cave_01.png");
+        let cave = BitMask::from_png_bytes(cave_bytes).expect("cave_01.png must decode");
+        assert_eq!(
+            (cave.width, cave.height),
+            (level.mask.width, level.mask.height),
+            "cave PNG must match world size"
+        );
+        for y in 0..cave.height as i32 {
+            for x in 0..cave.width as i32 {
+                if cave.is_solid(x, y) {
+                    level.mask.set(x, y, true);
+                }
+            }
+        }
+        level
+    }
+}
+
 #[derive(Copy, Clone, Debug)]
 pub struct Bullet {
     pub pos: Vec2,
@@ -377,7 +400,9 @@ impl World {
                 continue;
             }
             let was_landed = ship.landed;
+            let was_landed_on_pad = ship.landed_on_pad;
             ship.landed = false;
+            ship.landed_on_pad = false;
             thrusted[idx] = step_ship(ship, *input, gravity, was_landed);
             resolve_ship_rects(ship, &self.level.rects, &mut wall_impact[idx]);
             resolve_ship_mask(ship, &self.level.mask, &mut wall_impact[idx]);
@@ -390,6 +415,9 @@ impl World {
                 && (ship.tipped_over || ship.vel.y > -LIFTOFF_VELOCITY)
             {
                 ship.landed = true;
+                if was_landed_on_pad {
+                    ship.landed_on_pad = true;
+                }
             }
 
             if ship.tipped_over {
@@ -407,7 +435,7 @@ impl World {
                         ship.alive = false;
                     }
                 }
-            } else if ship.landed {
+            } else if ship.landed_on_pad {
                 let tilt = angle_diff(ship.angle, UPRIGHT_ANGLE);
                 if tilt.abs() < SETTLED_ANGLE_TOL {
                     ship.settled_ticks = ship.settled_ticks.saturating_add(1);
@@ -876,6 +904,9 @@ fn resolve_ship_pad(ship: &mut Ship, pad: &Rect, impact: &mut Option<WallImpact>
     ship.pos.y -= penetration;
 
     apply_contact(ship, Vec2::new(lowest.x, pad_top), Vec2::new(0.0, -1.0), impact);
+    if ship.landed {
+        ship.landed_on_pad = true;
+    }
 }
 
 fn resolve_ship_wall(ship: &mut Ship, rect: &Rect, impact: &mut Option<WallImpact>) {
@@ -1555,9 +1586,7 @@ mod tests {
     }
 
     #[test]
-    fn floor_landing_refuels_and_recharges() {
-        // Same scenario as pad_refuels_and_recharges_while_landed but
-        // dropped over the bare floor between the pads, not on a pad.
+    fn floor_landing_does_not_refuel_or_recharge() {
         let mut world = world_with_ship(
             Vec2::new(640.0, 600.0),
             Vec2::new(0.0, 30.0),
@@ -1570,10 +1599,11 @@ mod tests {
         }
         let ship = &world.ships[0];
         assert!(ship.landed);
-        assert!(ship.fuel > 100.0, "fuel should regen on floor, got {}", ship.fuel);
+        assert!(!ship.landed_on_pad);
+        assert!(ship.fuel <= 100.0, "fuel should not regen off-pad, got {}", ship.fuel);
         assert!(
-            ship.shields > 20.0,
-            "shields should regen on floor, got {}",
+            ship.shields <= 20.0,
+            "shields should not regen off-pad, got {}",
             ship.shields
         );
     }
