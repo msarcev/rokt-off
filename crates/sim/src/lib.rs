@@ -302,7 +302,7 @@ impl Default for Level {
         Self {
             size,
             gravity: DEFAULT_GRAVITY,
-            spawn_points: [Vec2::new(240.0, 200.0), Vec2::new(1040.0, 200.0)],
+            spawn_points: [Vec2::new(240.0, 540.0), Vec2::new(1040.0, 540.0)],
             rects,
             mask,
         }
@@ -420,9 +420,10 @@ impl World {
             // Stay-landed sticky: pivot rotation can briefly lift the
             // contact vertex; treat the ship as still landed unless it's
             // moving up faster than LIFTOFF_VELOCITY.
+            let force_stay_landed = ship.tipped_over && !thrusted[idx];
             if was_landed
                 && !ship.landed
-                && (ship.tipped_over || ship.vel.y > -LIFTOFF_VELOCITY)
+                && (force_stay_landed || ship.vel.y > -LIFTOFF_VELOCITY)
             {
                 ship.landed = true;
                 if was_landed_on_pad {
@@ -460,11 +461,7 @@ impl World {
                 ship.settled_ticks = 0;
             }
 
-            // Hold-fire = autofire. Tipped ships can't fire.
-            if !ship.tipped_over
-                && input.contains(Input::FIRE)
-                && ship.fire_cooldown <= 0.0
-            {
+            if input.contains(Input::FIRE) && ship.fire_cooldown <= 0.0 {
                 spawn_bullet(&mut self.bullets, ship, idx as u8);
                 ship.fire_cooldown = FIRE_COOLDOWN;
             }
@@ -1078,8 +1075,6 @@ fn apply_contact(
             ship.landed = true;
         }
 
-        // Settle assist: gentle restoring torque only when ship is stably
-        // resting on a near-horizontal surface within an angular basin.
         if ship.landed
             && normal.y < SETTLE_NORMAL_Y_MAX
             && ship.vel.length_squared() < SETTLE_VEL * SETTLE_VEL
@@ -1127,10 +1122,9 @@ fn step_ship(ship: &mut Ship, input: Input, gravity: Vec2, was_landed: bool) -> 
     ship.angular_vel = ship.angular_vel * SHIP_ANGULAR_DAMPING + angular_accel * DT;
     ship.angle += ship.angular_vel * DT;
 
-    // Tipped ships can rotate (A/D recovery) but can't thrust.
     let mut accel = gravity;
     let mut thrusted = false;
-    if !ship.tipped_over && input.contains(Input::THRUST) && ship.fuel > 0.0 {
+    if input.contains(Input::THRUST) && ship.fuel > 0.0 {
         accel += ship.forward() * SHIP_THRUST;
         ship.fuel = (ship.fuel - FUEL_BURN_PER_SEC * DT).max(0.0);
         thrusted = true;
@@ -1535,12 +1529,7 @@ mod tests {
     }
 
     #[test]
-    fn tipped_ship_cannot_lift_off() {
-        // Two parallel worlds, identical setup. One mashes thrust, the
-        // other holds nothing. If thrust is fully suppressed for tipped
-        // ships, both worlds must produce identical state up to death —
-        // including the rotation arc to lying-flat and the chip-damage
-        // timeline.
+    fn tipped_ship_lifts_off_with_thrust() {
         let setup = || {
             let mut w = world_with_ship(
                 Vec2::new(240.0, 600.0),
@@ -1559,15 +1548,16 @@ mod tests {
         let mut without_thrust = setup();
         assert!(with_thrust.ships[0].tipped_over);
 
-        while with_thrust.ships[0].alive {
+        for _ in 0..120 {
             with_thrust.tick([Input::THRUST, Input::empty()]);
             without_thrust.tick([Input::empty(), Input::empty()]);
-            assert_eq!(
-                with_thrust.ships[0].pos, without_thrust.ships[0].pos,
-                "thrust must have no effect on a tipped ship"
-            );
         }
-        assert!(!with_thrust.ships[0].alive);
+
+        let delta = (with_thrust.ships[0].pos - without_thrust.ships[0].pos).length();
+        assert!(
+            delta > 50.0,
+            "thrust on a tipped ship should move it noticeably; delta={delta}"
+        );
     }
 
     #[test]
