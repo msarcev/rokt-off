@@ -12,6 +12,8 @@ const STICK_RING_R: f32 = 60.0;
 const STICK_KNOB_R: f32 = 16.0;
 const FIRE_R: f32 = 56.0;
 const FIRE_MARGIN: f32 = 28.0;
+const PAUSE_R: f32 = 22.0;
+const PAUSE_MARGIN: f32 = 18.0;
 
 pub struct TouchInput {
     stick_id: Option<u64>,
@@ -19,6 +21,12 @@ pub struct TouchInput {
     stick_pos: Vec2,
     fire_held: bool,
     was_active: bool,
+    pause_id: Option<u64>,
+    menu_pressed: bool,
+}
+
+fn pause_center() -> Vec2 {
+    vec2(screen_width() - PAUSE_MARGIN - PAUSE_R, PAUSE_MARGIN + PAUSE_R)
 }
 
 impl TouchInput {
@@ -29,17 +37,51 @@ impl TouchInput {
             stick_pos: Vec2::ZERO,
             fire_held: false,
             was_active: false,
+            pause_id: None,
+            menu_pressed: false,
         }
+    }
+
+    /// Edge-triggered: returns true once per pause-button tap, then clears.
+    pub fn take_menu_press(&mut self) -> bool {
+        let pressed = self.menu_pressed;
+        self.menu_pressed = false;
+        pressed
     }
 
     /// Sample current touches and return the resulting input bitmask. Call
     /// once per tick — keyboard composition happens at the call site.
     pub fn poll(&mut self) -> Input {
         let mid_x = screen_width() * 0.5;
+        let pause_c = pause_center();
         let mut fire = false;
         let mut stick_seen = false;
         for t in touches() {
             self.was_active = true;
+
+            // A finger that started in the pause zone is owned by the pause
+            // button until it ends or is cancelled — never feeds stick/fire.
+            if self.pause_id == Some(t.id) {
+                let inside = (t.position - pause_c).length() <= PAUSE_R;
+                match t.phase {
+                    TouchPhase::Ended => {
+                        if inside {
+                            self.menu_pressed = true;
+                        }
+                        self.pause_id = None;
+                    }
+                    TouchPhase::Cancelled => self.pause_id = None,
+                    _ => {}
+                }
+                continue;
+            }
+            if t.phase == TouchPhase::Started
+                && (t.position - pause_c).length() <= PAUSE_R
+            {
+                self.pause_id = Some(t.id);
+                continue;
+            }
+
             if t.position.x < mid_x {
                 if self.stick_id.is_none() {
                     self.stick_id = Some(t.id);
@@ -111,6 +153,16 @@ impl TouchInput {
         let label = "FIRE";
         let dim = measure_text(label, None, 22, 1.0);
         draw_text(label, fx - dim.width * 0.5, fy + dim.height * 0.5, 22.0, ink);
+
+        let pc = pause_center();
+        let pause_fill = if self.pause_id.is_some() { fill_held } else { fill_idle };
+        draw_circle(pc.x, pc.y, PAUSE_R, pause_fill);
+        draw_circle_lines(pc.x, pc.y, PAUSE_R, 2.0, ink);
+        let bar_w = 4.0;
+        let bar_h = PAUSE_R * 0.8;
+        let gap = 4.0;
+        draw_rectangle(pc.x - bar_w - gap * 0.5, pc.y - bar_h * 0.5, bar_w, bar_h, ink);
+        draw_rectangle(pc.x + gap * 0.5, pc.y - bar_h * 0.5, bar_w, bar_h, ink);
     }
 }
 

@@ -237,7 +237,7 @@ pub async fn run() {
                 }
             }
             AppState::Playing { mode, session, camera, touch } => {
-                if is_key_pressed(KeyCode::Escape) {
+                if is_key_pressed(KeyCode::Escape) || touch.borrow_mut().take_menu_press() {
                     Some(AppState::Menu(menu::Menu::new()))
                 } else {
                     note_keyboard_input(touch);
