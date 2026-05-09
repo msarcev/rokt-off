@@ -62,10 +62,22 @@ impl TouchInput {
     /// once per tick — keyboard composition happens at the call site.
     pub fn poll(&mut self) -> Input {
         let dpr = screen_dpi_scale();
-        let mid_x = screen_width() * 0.5;
+        let sw = screen_width();
+        let sh = screen_height();
+        let mid_x = sw * 0.5;
         let pause_c = pause_center();
         let dz = STICK_DEADZONE_X * dpr;
         let thrust = STICK_THRUST_Y * dpr;
+
+        // After a window resize / orientation flip, an existing stick origin
+        // can land in the right half or off-screen — drop it so the deflection
+        // math doesn't go nuts and the next press re-anchors cleanly.
+        if self.stick_id.is_some() {
+            let o = self.stick_origin;
+            if o.x < 0.0 || o.x >= mid_x || o.y < 0.0 || o.y > sh {
+                self.stick_id = None;
+            }
+        }
 
         let mut stick_seen = false;
         let mut still_firing: Vec<u64> = Vec::with_capacity(self.fire_ids.len() + 1);
