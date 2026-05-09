@@ -47,6 +47,10 @@ impl TouchInput {
         }
     }
 
+    pub fn is_active(&self) -> bool {
+        self.was_active
+    }
+
     /// Edge-triggered: returns true once per pause-button tap, then clears.
     pub fn take_menu_press(&mut self) -> bool {
         let pressed = self.menu_pressed;

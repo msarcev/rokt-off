@@ -502,7 +502,16 @@ fn draw_playing(world: &World, camera: &FollowCamera, touch: &TouchInput, show_m
     draw_bullets(world);
     draw_particles(world);
     set_default_camera();
-    draw_hud(world, 0.0, sh - hud_px, sw, hud_px, hud_px / HUD_H);
+    draw_hud(
+        world,
+        0.0,
+        sh - hud_px,
+        sw,
+        hud_px,
+        hud_px / HUD_H,
+        touch.is_active(),
+        sh > sw,
+    );
     touch.draw_overlay();
 }
 
@@ -586,7 +595,16 @@ fn draw_particles(world: &World) {
     }
 }
 
-fn draw_hud(world: &World, x: f32, y: f32, w: f32, h: f32, s: f32) {
+fn draw_hud(
+    world: &World,
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    s: f32,
+    touch_active: bool,
+    portrait: bool,
+) {
     let paper = Color::from_rgba(238, 232, 213, 255);
     let ink = Color::from_rgba(50, 45, 60, 230);
     let ink_soft = Color::from_rgba(50, 45, 60, 110);
@@ -597,12 +615,12 @@ fn draw_hud(world: &World, x: f32, y: f32, w: f32, h: f32, s: f32) {
     draw_line(x, y, x + w, y, 1.5 * s, ink);
     draw_line(x + 24.0 * s, y + 3.0 * s, x + w - 24.0 * s, y + 3.0 * s, 0.7 * s, ink_soft);
 
-    let pad_x = 22.0 * s;
+    let pad_x = if portrait { 10.0 * s } else { 22.0 * s };
     let bar_h = 11.0 * s;
     let bar_gap = 7.0 * s;
     let label_size = 22.0 * s;
     let label_w = 28.0 * s;
-    let label_gap = 12.0 * s;
+    let label_gap = if portrait { 6.0 * s } else { 12.0 * s };
 
     let half = w * 0.5;
     let max_bar_w = (half - pad_x - label_w - label_gap - 8.0 * s).max(40.0 * s);
@@ -625,12 +643,14 @@ fn draw_hud(world: &World, x: f32, y: f32, w: f32, h: f32, s: f32) {
         draw_pencil_bar(bar_x, bar_y_fuel, bar_w, bar_h, ship.fuel / FUEL_MAX, fuel_fill, ink, ink_soft, s);
     }
 
-    let legend = "Move: Arrows    Fire: Space";
-    let legend_size = 16.0 * s;
-    let dim = measure_text(legend, None, legend_size as u16, 1.0);
-    let legend_x = x + (w - dim.width) * 0.5;
-    let legend_y = y + h - 10.0 * s;
-    draw_text(legend, legend_x, legend_y, legend_size, ink);
+    if !touch_active && !portrait {
+        let legend = "Move: Arrows    Fire: Space";
+        let legend_size = 16.0 * s;
+        let dim = measure_text(legend, None, legend_size as u16, 1.0);
+        let legend_x = x + (w - dim.width) * 0.5;
+        let legend_y = y + h - 10.0 * s;
+        draw_text(legend, legend_x, legend_y, legend_size, ink);
+    }
 }
 
 fn draw_pencil_bar(x: f32, y: f32, w: f32, h: f32, frac: f32, fill: Color, ink: Color, ink_soft: Color, s: f32) {
