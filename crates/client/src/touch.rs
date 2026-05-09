@@ -8,6 +8,7 @@ use crate::session::{InputSource, poll_keyboard};
 
 const STICK_DEADZONE_X: f32 = 20.0;
 const STICK_THRUST_Y: f32 = -20.0;
+const HYSTERESIS: f32 = 0.7;
 const STICK_RING_R: f32 = 60.0;
 const STICK_KNOB_R: f32 = 16.0;
 const FIRE_R: f32 = 56.0;
@@ -23,6 +24,8 @@ pub struct TouchInput {
     was_active: bool,
     pause_id: Option<u64>,
     menu_pressed: bool,
+    fire_ids: Vec<u64>,
+    last_input: Input,
 }
 
 fn pause_center() -> Vec2 {
@@ -39,6 +42,8 @@ impl TouchInput {
             was_active: false,
             pause_id: None,
             menu_pressed: false,
+            fire_ids: Vec::new(),
+            last_input: Input::empty(),
         }
     }
 
@@ -52,15 +57,19 @@ impl TouchInput {
     /// Sample current touches and return the resulting input bitmask. Call
     /// once per tick — keyboard composition happens at the call site.
     pub fn poll(&mut self) -> Input {
+        let dpr = screen_dpi_scale();
         let mid_x = screen_width() * 0.5;
         let pause_c = pause_center();
-        let mut fire = false;
+        let dz = STICK_DEADZONE_X * dpr;
+        let thrust = STICK_THRUST_Y * dpr;
+
         let mut stick_seen = false;
+        let mut still_firing: Vec<u64> = Vec::with_capacity(self.fire_ids.len() + 1);
+
         for t in touches() {
             self.was_active = true;
 
-            // A finger that started in the pause zone is owned by the pause
-            // button until it ends or is cancelled — never feeds stick/fire.
+            // Pause finger: own its lifecycle, never feed stick/fire.
             if self.pause_id == Some(t.id) {
                 let inside = (t.position - pause_c).length() <= PAUSE_R;
                 match t.phase {
@@ -75,47 +84,73 @@ impl TouchInput {
                 }
                 continue;
             }
-            if t.phase == TouchPhase::Started
-                && (t.position - pause_c).length() <= PAUSE_R
-            {
-                self.pause_id = Some(t.id);
+
+            // New touch: claim a zone based on where it *started*.
+            if t.phase == TouchPhase::Started {
+                if (t.position - pause_c).length() <= PAUSE_R {
+                    self.pause_id = Some(t.id);
+                } else if t.position.x < mid_x {
+                    if self.stick_id.is_none() {
+                        self.stick_id = Some(t.id);
+                        self.stick_origin = t.position;
+                        self.stick_pos = t.position;
+                        stick_seen = true;
+                    }
+                } else {
+                    still_firing.push(t.id);
+                }
                 continue;
             }
 
-            if t.position.x < mid_x {
-                if self.stick_id.is_none() {
-                    self.stick_id = Some(t.id);
-                    self.stick_origin = t.position;
+            // Established stick finger.
+            if self.stick_id == Some(t.id) {
+                match t.phase {
+                    TouchPhase::Ended | TouchPhase::Cancelled => self.stick_id = None,
+                    _ => {
+                        self.stick_pos = t.position;
+                        stick_seen = true;
+                    }
                 }
-                if self.stick_id == Some(t.id) {
-                    self.stick_pos = t.position;
-                    stick_seen = true;
+                continue;
+            }
+
+            // Established fire finger.
+            if self.fire_ids.contains(&t.id) {
+                if !matches!(t.phase, TouchPhase::Ended | TouchPhase::Cancelled) {
+                    still_firing.push(t.id);
                 }
-            } else {
-                fire = true;
+                continue;
             }
         }
+
         if !stick_seen {
             self.stick_id = None;
         }
-        self.fire_held = fire;
+        self.fire_ids = still_firing;
+        self.fire_held = !self.fire_ids.is_empty();
 
         let mut input = Input::empty();
         if self.stick_id.is_some() {
             let d = self.stick_pos - self.stick_origin;
-            if d.x < -STICK_DEADZONE_X {
+            // Hysteresis: lower the threshold once the input is already on, so
+            // jitter near the edge doesn't chatter the bitflag on/off.
+            let dz_left = if self.last_input.contains(Input::ROTATE_LEFT) { dz * HYSTERESIS } else { dz };
+            let dz_right = if self.last_input.contains(Input::ROTATE_RIGHT) { dz * HYSTERESIS } else { dz };
+            let thrust_off = if self.last_input.contains(Input::THRUST) { thrust * HYSTERESIS } else { thrust };
+            if d.x < -dz_left {
                 input |= Input::ROTATE_LEFT;
             }
-            if d.x > STICK_DEADZONE_X {
+            if d.x > dz_right {
                 input |= Input::ROTATE_RIGHT;
             }
-            if d.y < STICK_THRUST_Y {
+            if d.y < thrust_off {
                 input |= Input::THRUST;
             }
         }
-        if fire {
+        if self.fire_held {
             input |= Input::FIRE;
         }
+        self.last_input = input;
         input
     }
 
