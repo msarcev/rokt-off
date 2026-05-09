@@ -6,88 +6,114 @@ use sim::Input;
 
 use crate::session::{InputSource, poll_keyboard};
 
-const STICK_DEADZONE_X: f32 = 20.0;
-const STICK_THRUST_Y: f32 = -20.0;
-const HYSTERESIS: f32 = 0.7;
-const STICK_RING_R: f32 = 60.0;
-const STICK_KNOB_R: f32 = 16.0;
-const FIRE_R: f32 = 56.0;
-const FIRE_MARGIN: f32 = 28.0;
+const BTN_R: f32 = 44.0;
+const BTN_GAP: f32 = 14.0;
+const EDGE_MARGIN: f32 = 28.0;
+const BOTTOM_MARGIN: f32 = 36.0;
 const PAUSE_R: f32 = 22.0;
 const PAUSE_MARGIN: f32 = 18.0;
 
-pub struct TouchInput {
-    stick_id: Option<u64>,
-    stick_origin: Vec2,
-    stick_pos: Vec2,
-    fire_held: bool,
-    was_active: bool,
-    pause_id: Option<u64>,
-    menu_pressed: bool,
-    fire_ids: Vec<u64>,
-    last_input: Input,
+#[derive(Copy, Clone)]
+struct Zone {
+    center: Vec2,
+    radius: f32,
 }
 
-fn pause_center() -> Vec2 {
-    vec2(screen_width() - PAUSE_MARGIN - PAUSE_R, PAUSE_MARGIN + PAUSE_R)
+impl Zone {
+    fn contains(&self, p: Vec2) -> bool {
+        (p - self.center).length() <= self.radius
+    }
+}
+
+struct Layout {
+    rotate_left: Zone,
+    rotate_right: Zone,
+    thrust: Zone,
+    fire: Zone,
+    pause: Zone,
+}
+
+fn layout() -> Layout {
+    let dpr = screen_dpi_scale();
+    let r = BTN_R * dpr;
+    let gap = BTN_GAP * dpr;
+    let edge = EDGE_MARGIN * dpr;
+    let bottom = BOTTOM_MARGIN * dpr;
+    let pause_r = PAUSE_R * dpr;
+    let pause_m = PAUSE_MARGIN * dpr;
+    let sw = screen_width();
+    let sh = screen_height();
+
+    let row_y = sh - bottom - r;
+    Layout {
+        rotate_left: Zone {
+            center: vec2(edge + r, row_y),
+            radius: r,
+        },
+        rotate_right: Zone {
+            center: vec2(edge + 3.0 * r + gap, row_y),
+            radius: r,
+        },
+        thrust: Zone {
+            center: vec2(edge + 2.0 * r + gap * 0.5, row_y - 2.0 * r - gap),
+            radius: r,
+        },
+        fire: Zone {
+            center: vec2(sw - edge - r, row_y),
+            radius: r,
+        },
+        pause: Zone {
+            center: vec2(sw - pause_m - pause_r, pause_m + pause_r),
+            radius: pause_r,
+        },
+    }
+}
+
+fn portrait() -> bool {
+    screen_height() > screen_width()
+}
+
+pub struct TouchInput {
+    left_ids: Vec<u64>,
+    right_ids: Vec<u64>,
+    thrust_ids: Vec<u64>,
+    fire_ids: Vec<u64>,
+    pause_id: Option<u64>,
+    menu_pressed: bool,
+    landscape_active: bool,
 }
 
 impl TouchInput {
     pub fn new() -> Self {
         Self {
-            stick_id: None,
-            stick_origin: Vec2::ZERO,
-            stick_pos: Vec2::ZERO,
-            fire_held: false,
-            was_active: false,
+            left_ids: Vec::new(),
+            right_ids: Vec::new(),
+            thrust_ids: Vec::new(),
+            fire_ids: Vec::new(),
             pause_id: None,
             menu_pressed: false,
-            fire_ids: Vec::new(),
-            last_input: Input::empty(),
+            landscape_active: false,
         }
     }
 
     pub fn is_active(&self) -> bool {
-        self.was_active
+        portrait() || self.landscape_active
     }
 
-    /// Edge-triggered: returns true once per pause-button tap, then clears.
     pub fn take_menu_press(&mut self) -> bool {
         let pressed = self.menu_pressed;
         self.menu_pressed = false;
         pressed
     }
 
-    /// Sample current touches and return the resulting input bitmask. Call
-    /// once per tick — keyboard composition happens at the call site.
     pub fn poll(&mut self) -> Input {
-        let dpr = screen_dpi_scale();
-        let sw = screen_width();
-        let sh = screen_height();
-        let mid_x = sw * 0.5;
-        let pause_c = pause_center();
-        let dz = STICK_DEADZONE_X * dpr;
-        let thrust = STICK_THRUST_Y * dpr;
-
-        // After a window resize / orientation flip, an existing stick origin
-        // can land in the right half or off-screen — drop it so the deflection
-        // math doesn't go nuts and the next press re-anchors cleanly.
-        if self.stick_id.is_some() {
-            let o = self.stick_origin;
-            if o.x < 0.0 || o.x >= mid_x || o.y < 0.0 || o.y > sh {
-                self.stick_id = None;
-            }
-        }
-
-        let mut stick_seen = false;
-        let mut still_firing: Vec<u64> = Vec::with_capacity(self.fire_ids.len() + 1);
+        let l = layout();
 
         for t in touches() {
-            self.was_active = true;
+            self.landscape_active = true;
 
-            // Pause finger: own its lifecycle, never feed stick/fire.
             if self.pause_id == Some(t.id) {
-                let inside = (t.position - pause_c).length() <= PAUSE_R;
+                let inside = l.pause.contains(t.position);
                 match t.phase {
                     TouchPhase::Ended => {
                         if inside {
@@ -101,124 +127,122 @@ impl TouchInput {
                 continue;
             }
 
-            // New touch: claim a zone based on where it *started*.
             if t.phase == TouchPhase::Started {
-                if (t.position - pause_c).length() <= PAUSE_R {
+                if l.pause.contains(t.position) {
                     self.pause_id = Some(t.id);
-                } else if t.position.x < mid_x {
-                    if self.stick_id.is_none() {
-                        self.stick_id = Some(t.id);
-                        self.stick_origin = t.position;
-                        self.stick_pos = t.position;
-                        stick_seen = true;
-                    }
-                } else {
-                    still_firing.push(t.id);
+                } else if l.fire.contains(t.position) {
+                    self.fire_ids.push(t.id);
+                } else if l.thrust.contains(t.position) {
+                    self.thrust_ids.push(t.id);
+                } else if l.rotate_left.contains(t.position) {
+                    self.left_ids.push(t.id);
+                } else if l.rotate_right.contains(t.position) {
+                    self.right_ids.push(t.id);
                 }
                 continue;
             }
 
-            // Established stick finger.
-            if self.stick_id == Some(t.id) {
-                match t.phase {
-                    TouchPhase::Ended | TouchPhase::Cancelled => self.stick_id = None,
-                    _ => {
-                        self.stick_pos = t.position;
-                        stick_seen = true;
-                    }
-                }
-                continue;
-            }
-
-            // Established fire finger.
-            if self.fire_ids.contains(&t.id) {
-                if !matches!(t.phase, TouchPhase::Ended | TouchPhase::Cancelled) {
-                    still_firing.push(t.id);
-                }
-                continue;
+            if matches!(t.phase, TouchPhase::Ended | TouchPhase::Cancelled) {
+                self.left_ids.retain(|&id| id != t.id);
+                self.right_ids.retain(|&id| id != t.id);
+                self.thrust_ids.retain(|&id| id != t.id);
+                self.fire_ids.retain(|&id| id != t.id);
             }
         }
-
-        if !stick_seen {
-            self.stick_id = None;
-        }
-        self.fire_ids = still_firing;
-        self.fire_held = !self.fire_ids.is_empty();
 
         let mut input = Input::empty();
-        if self.stick_id.is_some() {
-            let d = self.stick_pos - self.stick_origin;
-            // Hysteresis: lower the threshold once the input is already on, so
-            // jitter near the edge doesn't chatter the bitflag on/off.
-            let dz_left = if self.last_input.contains(Input::ROTATE_LEFT) { dz * HYSTERESIS } else { dz };
-            let dz_right = if self.last_input.contains(Input::ROTATE_RIGHT) { dz * HYSTERESIS } else { dz };
-            let thrust_off = if self.last_input.contains(Input::THRUST) { thrust * HYSTERESIS } else { thrust };
-            if d.x < -dz_left {
-                input |= Input::ROTATE_LEFT;
-            }
-            if d.x > dz_right {
-                input |= Input::ROTATE_RIGHT;
-            }
-            if d.y < thrust_off {
-                input |= Input::THRUST;
-            }
+        if !self.left_ids.is_empty() {
+            input |= Input::ROTATE_LEFT;
         }
-        if self.fire_held {
+        if !self.right_ids.is_empty() {
+            input |= Input::ROTATE_RIGHT;
+        }
+        if !self.thrust_ids.is_empty() {
+            input |= Input::THRUST;
+        }
+        if !self.fire_ids.is_empty() {
             input |= Input::FIRE;
         }
-        self.last_input = input;
         input
     }
 
-    /// User reached for the keyboard — hide the overlay until the next touch.
     pub fn note_keyboard_press(&mut self) {
-        self.was_active = false;
+        self.landscape_active = false;
     }
 
     pub fn draw_overlay(&self) {
-        if !self.was_active {
+        if !self.is_active() {
             return;
         }
-        let sw = screen_width();
-        let sh = screen_height();
+        let l = layout();
         let ink = Color::new(238.0 / 255.0, 232.0 / 255.0, 213.0 / 255.0, 0.7);
-        let fill_idle = Color::new(238.0 / 255.0, 232.0 / 255.0, 213.0 / 255.0, 0.18);
-        let fill_held = Color::new(238.0 / 255.0, 232.0 / 255.0, 213.0 / 255.0, 0.45);
+        let idle = Color::new(238.0 / 255.0, 232.0 / 255.0, 213.0 / 255.0, 0.18);
+        let held = Color::new(238.0 / 255.0, 232.0 / 255.0, 213.0 / 255.0, 0.45);
 
-        if self.stick_id.is_some() {
-            draw_circle_lines(
-                self.stick_origin.x,
-                self.stick_origin.y,
-                STICK_RING_R,
-                2.0,
-                ink,
-            );
-            draw_circle(self.stick_pos.x, self.stick_pos.y, STICK_KNOB_R, ink);
-        }
-
-        let fx = sw - FIRE_MARGIN - FIRE_R;
-        let fy = sh - FIRE_MARGIN - FIRE_R;
-        let fill = if self.fire_held { fill_held } else { fill_idle };
-        draw_circle(fx, fy, FIRE_R, fill);
-        draw_circle_lines(fx, fy, FIRE_R, 2.0, ink);
-        let label = "FIRE";
-        let dim = measure_text(label, None, 22, 1.0);
-        draw_text(label, fx - dim.width * 0.5, fy + dim.height * 0.5, 22.0, ink);
-
-        let pc = pause_center();
-        let pause_fill = if self.pause_id.is_some() { fill_held } else { fill_idle };
-        draw_circle(pc.x, pc.y, PAUSE_R, pause_fill);
-        draw_circle_lines(pc.x, pc.y, PAUSE_R, 2.0, ink);
-        let bar_w = 4.0;
-        let bar_h = PAUSE_R * 0.8;
-        let gap = 4.0;
-        draw_rectangle(pc.x - bar_w - gap * 0.5, pc.y - bar_h * 0.5, bar_w, bar_h, ink);
-        draw_rectangle(pc.x + gap * 0.5, pc.y - bar_h * 0.5, bar_w, bar_h, ink);
+        draw_button(
+            l.rotate_left,
+            "<",
+            !self.left_ids.is_empty(),
+            ink,
+            idle,
+            held,
+        );
+        draw_button(
+            l.rotate_right,
+            ">",
+            !self.right_ids.is_empty(),
+            ink,
+            idle,
+            held,
+        );
+        draw_button(l.thrust, "^", !self.thrust_ids.is_empty(), ink, idle, held);
+        draw_button(l.fire, "FIRE", !self.fire_ids.is_empty(), ink, idle, held);
+        draw_pause(l.pause, self.pause_id.is_some(), ink, idle, held);
     }
 }
 
-/// OR keyboard with the touch source each tick. Captures a clone of the
-/// shared `TouchInput` so the overlay's draw call sees the same state.
+fn draw_button(z: Zone, label: &str, is_held: bool, ink: Color, idle: Color, held: Color) {
+    let fill = if is_held { held } else { idle };
+    draw_circle(z.center.x, z.center.y, z.radius, fill);
+    draw_circle_lines(z.center.x, z.center.y, z.radius, 2.0, ink);
+    let size = if label.len() <= 1 {
+        z.radius * 0.9
+    } else {
+        z.radius * 0.55
+    };
+    let dim = measure_text(label, None, size as u16, 1.0);
+    draw_text(
+        label,
+        z.center.x - dim.width * 0.5,
+        z.center.y + dim.height * 0.5,
+        size,
+        ink,
+    );
+}
+
+fn draw_pause(z: Zone, is_held: bool, ink: Color, idle: Color, held: Color) {
+    let fill = if is_held { held } else { idle };
+    draw_circle(z.center.x, z.center.y, z.radius, fill);
+    draw_circle_lines(z.center.x, z.center.y, z.radius, 2.0, ink);
+    let bar_w = 4.0;
+    let bar_h = z.radius * 0.8;
+    let gap = 4.0;
+    draw_rectangle(
+        z.center.x - bar_w - gap * 0.5,
+        z.center.y - bar_h * 0.5,
+        bar_w,
+        bar_h,
+        ink,
+    );
+    draw_rectangle(
+        z.center.x + gap * 0.5,
+        z.center.y - bar_h * 0.5,
+        bar_w,
+        bar_h,
+        ink,
+    );
+}
+
 pub fn input_source(touch: Rc<RefCell<TouchInput>>) -> InputSource {
     Box::new(move || poll_keyboard() | touch.borrow_mut().poll())
 }
