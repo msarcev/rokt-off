@@ -34,13 +34,12 @@ struct Layout {
 }
 
 fn layout() -> Layout {
-    let dpr = screen_dpi_scale();
-    let r = BTN_R * dpr;
-    let gap = BTN_GAP * dpr;
-    let edge = EDGE_MARGIN * dpr;
-    let bottom = BOTTOM_MARGIN * dpr;
-    let pause_r = PAUSE_R * dpr;
-    let pause_m = PAUSE_MARGIN * dpr;
+    let r = BTN_R;
+    let gap = BTN_GAP;
+    let edge = EDGE_MARGIN;
+    let bottom = BOTTOM_MARGIN;
+    let pause_r = PAUSE_R;
+    let pause_m = PAUSE_MARGIN;
     let sw = screen_width();
     let sh = screen_height();
 
