@@ -26,7 +26,12 @@ impl Replay {
                     let seed = u64::from_le_bytes(buf[0..8].try_into().unwrap());
                     let recorded = buf[8..]
                         .chunks_exact(2)
-                        .map(|c| [Input::from_bits_truncate(c[0]), Input::from_bits_truncate(c[1])])
+                        .map(|c| {
+                            [
+                                Input::from_bits_truncate(c[0]),
+                                Input::from_bits_truncate(c[1]),
+                            ]
+                        })
                         .collect();
                     (seed, recorded)
                 } else {
@@ -46,7 +51,12 @@ impl Replay {
             .open(&path)
             .expect("open replay.bin for append");
 
-        Self { path, file, seed, recorded }
+        Self {
+            path,
+            file,
+            seed,
+            recorded,
+        }
     }
 
     pub fn record(&mut self, inputs: [Input; 2]) {
@@ -55,7 +65,8 @@ impl Replay {
 
     pub fn reset(&mut self) {
         let mut f = File::create(&self.path).expect("truncate replay.bin");
-        f.write_all(&DEFAULT_SEED.to_le_bytes()).expect("write seed");
+        f.write_all(&DEFAULT_SEED.to_le_bytes())
+            .expect("write seed");
         self.file = OpenOptions::new()
             .append(true)
             .open(&self.path)

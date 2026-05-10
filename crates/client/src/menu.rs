@@ -43,7 +43,13 @@ impl Menu {
         let title = "ROKT-OFF";
         let title_size = 96.0;
         let dim = measure_text(title, None, title_size as u16, 1.0);
-        draw_text(title, (sw - dim.width) / 2.0, sh * 0.30, title_size, Color::from_rgba(238, 232, 213, 255));
+        draw_text(
+            title,
+            (sw - dim.width) / 2.0,
+            sh * 0.30,
+            title_size,
+            Color::from_rgba(238, 232, 213, 255),
+        );
 
         let (mx, my) = mouse_position();
         let mouse_pos = vec2(mx, my);
@@ -56,7 +62,14 @@ impl Menu {
                 Color::from_rgba(40, 40, 55, 255)
             };
             draw_rectangle(r.x, r.y, r.w, r.h, fill);
-            draw_rectangle_lines(r.x, r.y, r.w, r.h, 2.0, Color::from_rgba(238, 232, 213, 255));
+            draw_rectangle_lines(
+                r.x,
+                r.y,
+                r.w,
+                r.h,
+                2.0,
+                Color::from_rgba(238, 232, 213, 255),
+            );
 
             let label = match c {
                 MenuChoice::Local => "LOCAL",

@@ -4,8 +4,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use ggrs::{
     Config, GgrsRequest, P2PSession, PlayerType, SessionBuilder, SessionState, SyncTestSession,
 };
+use macroquad::prelude::{KeyCode, is_key_down};
 use matchbox_socket::{PeerId, PeerState, WebRtcSocket};
-use macroquad::prelude::{is_key_down, KeyCode};
 use sim::{Input, World};
 
 use crate::net_input::NetInput;
@@ -41,7 +41,12 @@ pub struct LocalSession {
 
 impl LocalSession {
     pub fn new(world: World, sources: [InputSource; 2]) -> Self {
-        Self { world, accumulator: 0.0, sources, on_tick: None }
+        Self {
+            world,
+            accumulator: 0.0,
+            sources,
+            on_tick: None,
+        }
     }
 
     pub fn with_recorder(mut self, f: Box<dyn FnMut([Input; 2])>) -> Self {
@@ -109,7 +114,12 @@ impl SyncTestRunner {
             .expect("add p1")
             .start_synctest_session()
             .expect("start synctest");
-        Self { session, world, accumulator: 0.0, frame: 0 }
+        Self {
+            session,
+            world,
+            accumulator: 0.0,
+            frame: 0,
+        }
     }
 
     fn step_one(&mut self) {
@@ -246,9 +256,7 @@ impl P2pRunner {
             if matches!(player, PlayerType::Local) {
                 local_handles.push(handle);
             }
-            builder = builder
-                .add_player(*player, handle)
-                .expect("add player");
+            builder = builder.add_player(*player, handle).expect("add player");
         }
 
         let channel = self.socket.take_channel(0).expect("take channel 0");
