@@ -1275,6 +1275,7 @@ var importObject = {
             canvas.addEventListener("pointerdown", function (event) {
                 if (event.pointerType === "mouse") return;
                 event.preventDefault();
+                try { canvas.setPointerCapture(event.pointerId); } catch (e) {}
                 let p = mouse_relative_position(event.clientX, event.clientY);
                 wasm_exports.touch(SAPP_EVENTTYPE_TOUCHES_BEGAN, event.pointerId, p.x, p.y);
             }, { passive: false });
@@ -1296,6 +1297,11 @@ var importObject = {
                 let p = mouse_relative_position(event.clientX, event.clientY);
                 wasm_exports.touch(SAPP_EVENTTYPE_TOUCHES_CANCELED, event.pointerId, p.x, p.y);
             }, { passive: false });
+            canvas.addEventListener("lostpointercapture", function (event) {
+                if (event.pointerType === "mouse") return;
+                let p = mouse_relative_position(event.clientX, event.clientY);
+                wasm_exports.touch(SAPP_EVENTTYPE_TOUCHES_CANCELED, event.pointerId, p.x, p.y);
+            });
 
             window.onresize = function () {
                 resize(canvas, wasm_exports.resize);
