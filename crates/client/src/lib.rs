@@ -91,11 +91,6 @@ fn js_join_show() {}
 #[cfg(not(target_arch = "wasm32"))]
 fn js_join_hide() {}
 #[cfg(not(target_arch = "wasm32"))]
-#[allow(dead_code)]
-fn js_join_buffer() -> String {
-    String::new()
-}
-#[cfg(not(target_arch = "wasm32"))]
 fn js_join_take_submit() -> bool {
     false
 }
