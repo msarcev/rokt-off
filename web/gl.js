@@ -1279,7 +1279,7 @@ var importObject = {
                     let relative_position = mouse_relative_position(touch.clientX, touch.clientY);
                     wasm_exports.touch(SAPP_EVENTTYPE_TOUCHES_BEGAN, touch.identifier, relative_position.x, relative_position.y);
                 }
-            });
+            }, { passive: false });
             canvas.addEventListener("touchend", function (event) {
                 event.preventDefault();
 
@@ -1287,7 +1287,7 @@ var importObject = {
                     let relative_position = mouse_relative_position(touch.clientX, touch.clientY);
                     wasm_exports.touch(SAPP_EVENTTYPE_TOUCHES_ENDED, touch.identifier, relative_position.x, relative_position.y);
                 }
-            });
+            }, { passive: false });
             canvas.addEventListener("touchcancel", function (event) {
                 event.preventDefault();
 
@@ -1295,7 +1295,7 @@ var importObject = {
                     let relative_position = mouse_relative_position(touch.clientX, touch.clientY);
                     wasm_exports.touch(SAPP_EVENTTYPE_TOUCHES_CANCELED, touch.identifier, relative_position.x, relative_position.y);
                 }
-            });
+            }, { passive: false });
             canvas.addEventListener("touchmove", function (event) {
                 event.preventDefault();
 
@@ -1303,7 +1303,7 @@ var importObject = {
                     let relative_position = mouse_relative_position(touch.clientX, touch.clientY);
                     wasm_exports.touch(SAPP_EVENTTYPE_TOUCHES_MOVED, touch.identifier, relative_position.x, relative_position.y);
                 }
-            });
+            }, { passive: false });
 
             window.onresize = function () {
                 resize(canvas, wasm_exports.resize);
