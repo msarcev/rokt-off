@@ -6,10 +6,10 @@ use sim::Input;
 
 use crate::session::{InputSource, poll_keyboard};
 
-const BTN_R: f32 = 44.0;
-const BTN_GAP: f32 = 14.0;
-const EDGE_MARGIN: f32 = 28.0;
-const BOTTOM_MARGIN: f32 = 36.0;
+const BTN_R: f32 = 34.0;
+const BTN_GAP: f32 = 10.0;
+const EDGE_MARGIN: f32 = 22.0;
+const BOTTOM_MARGIN: f32 = 28.0;
 const PAUSE_R: f32 = 22.0;
 const PAUSE_MARGIN: f32 = 18.0;
 
@@ -107,12 +107,14 @@ impl TouchInput {
 
     pub fn poll(&mut self) -> Input {
         let l = layout();
+        let dpr = screen_dpi_scale();
 
         for t in touches() {
             self.landscape_active = true;
+            let pos = t.position / dpr;
 
             if self.pause_id == Some(t.id) {
-                let inside = l.pause.contains(t.position);
+                let inside = l.pause.contains(pos);
                 match t.phase {
                     TouchPhase::Ended => {
                         if inside {
@@ -127,15 +129,15 @@ impl TouchInput {
             }
 
             if t.phase == TouchPhase::Started {
-                if l.pause.contains(t.position) {
+                if l.pause.contains(pos) {
                     self.pause_id = Some(t.id);
-                } else if l.fire.contains(t.position) {
+                } else if l.fire.contains(pos) {
                     self.fire_ids.push(t.id);
-                } else if l.thrust.contains(t.position) {
+                } else if l.thrust.contains(pos) {
                     self.thrust_ids.push(t.id);
-                } else if l.rotate_left.contains(t.position) {
+                } else if l.rotate_left.contains(pos) {
                     self.left_ids.push(t.id);
-                } else if l.rotate_right.contains(t.position) {
+                } else if l.rotate_right.contains(pos) {
                     self.right_ids.push(t.id);
                 }
                 continue;
