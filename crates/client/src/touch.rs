@@ -45,10 +45,11 @@ fn layout() -> Layout {
     let sw = screen_width();
     let sh = screen_height();
 
-    let row_y = sh - bottom - r;
+    let row_bottom = if portrait() { sh * 0.85 } else { sh - bottom };
+    let row_y = row_bottom - r;
     Layout {
         thrust: Zone {
-            center: vec2(edge + tr, sh - bottom - tr),
+            center: vec2(edge + tr, row_bottom - tr),
             radius: tr,
         },
         rotate_right: Zone {
