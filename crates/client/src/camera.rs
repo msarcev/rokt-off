@@ -8,7 +8,11 @@ pub struct FollowCamera {
 
 impl FollowCamera {
     pub fn new(target: Vec2, view_size: Vec2, smoothing: f32) -> Self {
-        Self { target, view_size, smoothing }
+        Self {
+            target,
+            view_size,
+            smoothing,
+        }
     }
 
     /// Snap the camera centre to a world position (no smoothing). Used at

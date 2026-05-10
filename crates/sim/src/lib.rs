@@ -203,7 +203,11 @@ impl BitMask {
         let total = (width as usize) * (height as usize);
         let words = total.div_ceil(64);
         let word = if fill { u64::MAX } else { 0 };
-        Self { width, height, bits: vec![word; words] }
+        Self {
+            width,
+            height,
+            bits: vec![word; words],
+        }
     }
 
     pub fn is_solid(&self, x: i32, y: i32) -> bool {
@@ -287,17 +291,41 @@ impl Default for Level {
     fn default() -> Self {
         let size = Vec2::new(1280.0, 720.0);
         let wall_rects = [
-            Rect { min: Vec2::new(0.0, 700.0), max: Vec2::new(size.x, size.y), kind: RectKind::Wall },
-            Rect { min: Vec2::ZERO, max: Vec2::new(size.x, 20.0), kind: RectKind::Wall },
-            Rect { min: Vec2::ZERO, max: Vec2::new(20.0, size.y), kind: RectKind::Wall },
-            Rect { min: Vec2::new(size.x - 20.0, 0.0), max: size, kind: RectKind::Wall },
+            Rect {
+                min: Vec2::new(0.0, 700.0),
+                max: Vec2::new(size.x, size.y),
+                kind: RectKind::Wall,
+            },
+            Rect {
+                min: Vec2::ZERO,
+                max: Vec2::new(size.x, 20.0),
+                kind: RectKind::Wall,
+            },
+            Rect {
+                min: Vec2::ZERO,
+                max: Vec2::new(20.0, size.y),
+                kind: RectKind::Wall,
+            },
+            Rect {
+                min: Vec2::new(size.x - 20.0, 0.0),
+                max: size,
+                kind: RectKind::Wall,
+            },
         ];
         let mask = BitMask::from_wall_rects(size.x as u32, size.y as u32, &wall_rects);
         let rects = vec![
             // P1 landing pad (centered on spawn x=240)
-            Rect { min: Vec2::new(180.0, 620.0), max: Vec2::new(300.0, 640.0), kind: RectKind::Pad },
+            Rect {
+                min: Vec2::new(180.0, 620.0),
+                max: Vec2::new(300.0, 640.0),
+                kind: RectKind::Pad,
+            },
             // P2 landing pad (centered on spawn x=1040)
-            Rect { min: Vec2::new(980.0, 620.0), max: Vec2::new(1100.0, 640.0), kind: RectKind::Pad },
+            Rect {
+                min: Vec2::new(980.0, 620.0),
+                max: Vec2::new(1100.0, 640.0),
+                kind: RectKind::Pad,
+            },
         ];
         Self {
             size,
@@ -421,10 +449,7 @@ impl World {
             // contact vertex; treat the ship as still landed unless it's
             // moving up faster than LIFTOFF_VELOCITY.
             let force_stay_landed = ship.tipped_over && !thrusted[idx];
-            if was_landed
-                && !ship.landed
-                && (force_stay_landed || ship.vel.y > -LIFTOFF_VELOCITY)
-            {
+            if was_landed && !ship.landed && (force_stay_landed || ship.vel.y > -LIFTOFF_VELOCITY) {
                 ship.landed = true;
                 if was_landed_on_pad {
                     ship.landed_on_pad = true;
@@ -513,10 +538,7 @@ impl World {
             } else {
                 ship.respawn_ticks -= 1;
                 if ship.respawn_ticks == 0 {
-                    *ship = Ship::new(
-                        self.level.spawn_points[idx],
-                        -std::f32::consts::FRAC_PI_2,
-                    );
+                    *ship = Ship::new(self.level.spawn_points[idx], -std::f32::consts::FRAC_PI_2);
                 }
             }
         }
@@ -667,7 +689,11 @@ fn resolve_ship_ship(ships: &mut [Ship; 2]) {
     a.vel -= normal * j;
     b.vel += normal * j;
 
-    let chip = if v_rel > BOUNCE_FLOOR { CHIP_DAMAGE_PER_BOUNCE } else { 0.0 };
+    let chip = if v_rel > BOUNCE_FLOOR {
+        CHIP_DAMAGE_PER_BOUNCE
+    } else {
+        0.0
+    };
     let over = (v_rel - SCRAPE_THRESHOLD).max(0.0);
     let extra = over * over * IMPACT_DAMAGE_SCALE;
     let total = (chip + extra) * SHIP_RAM_DAMAGE_SCALE;
@@ -710,7 +736,11 @@ fn sat_triangles(a: &[Vec2; 3], b: &[Vec2; 3], a_to_b: Vec2) -> Option<(Vec2, f3
         }
     }
 
-    let oriented = if a_to_b.dot(min_axis) >= 0.0 { min_axis } else { -min_axis };
+    let oriented = if a_to_b.dot(min_axis) >= 0.0 {
+        min_axis
+    } else {
+        -min_axis
+    };
     Some((oriented, min_depth))
 }
 
@@ -913,7 +943,12 @@ fn resolve_ship_pad(ship: &mut Ship, pad: &Rect, impact: &mut Option<WallImpact>
     let penetration = lowest_y - pad_top;
     ship.pos.y -= penetration;
 
-    apply_contact(ship, Vec2::new(lowest.x, pad_top), Vec2::new(0.0, -1.0), impact);
+    apply_contact(
+        ship,
+        Vec2::new(lowest.x, pad_top),
+        Vec2::new(0.0, -1.0),
+        impact,
+    );
     if ship.landed {
         ship.landed_on_pad = true;
     }
@@ -952,10 +987,15 @@ fn resolve_ship_wall(ship: &mut Ship, rect: &Rect, impact: &mut Option<WallImpac
             }
         } else {
             let m = dx_left.min(dx_right).min(dy_up).min(dy_down);
-            if m == dx_left { (Vec2::new(-1.0, 0.0), dx_left) }
-            else if m == dx_right { (Vec2::new(1.0, 0.0), dx_right) }
-            else if m == dy_up { (Vec2::new(0.0, -1.0), dy_up) }
-            else { (Vec2::new(0.0, 1.0), dy_down) }
+            if m == dx_left {
+                (Vec2::new(-1.0, 0.0), dx_left)
+            } else if m == dx_right {
+                (Vec2::new(1.0, 0.0), dx_right)
+            } else if m == dy_up {
+                (Vec2::new(0.0, -1.0), dy_up)
+            } else {
+                (Vec2::new(0.0, 1.0), dy_down)
+            }
         };
         (n, side_dist + SHIP_RADIUS)
     };
@@ -1001,12 +1041,7 @@ fn apply_friction_impulse(ship: &mut Ship, kin: &ContactKinematics, j_n: f32, mu
     ship.angular_vel += j_t * r_cross_t / SHIP_INERTIA;
 }
 
-fn apply_contact(
-    ship: &mut Ship,
-    contact: Vec2,
-    normal: Vec2,
-    impact: &mut Option<WallImpact>,
-) {
+fn apply_contact(ship: &mut Ship, contact: Vec2, normal: Vec2, impact: &mut Option<WallImpact>) {
     let landable = normal.dot(Vec2::new(0.0, -1.0)) > LANDABLE_DOT;
     let kin = contact_kinematics(ship, contact, normal);
     let impact_speed = (-kin.v_n).max(0.0);
@@ -1017,7 +1052,11 @@ fn apply_contact(
         let over = (damage_speed - SCRAPE_THRESHOLD).max(0.0);
         let extra = over * over * IMPACT_DAMAGE_SCALE + CHIP_DAMAGE_PER_BOUNCE;
         ship.shields = (ship.shields - extra).max(0.0);
-        *impact = Some(WallImpact { pos: contact, normal, speed: damage_speed });
+        *impact = Some(WallImpact {
+            pos: contact,
+            normal,
+            speed: damage_speed,
+        });
         if ship.shields <= 0.0 {
             ship.alive = false;
             return;
@@ -1034,7 +1073,11 @@ fn apply_contact(
             ship.alive = false;
             return;
         }
-        *impact = Some(WallImpact { pos: contact, normal, speed: impact_speed });
+        *impact = Some(WallImpact {
+            pos: contact,
+            normal,
+            speed: impact_speed,
+        });
     }
 
     let is_bounce = impact_speed > BOUNCE_FLOOR;
@@ -1173,9 +1216,18 @@ mod tests {
     fn default_level_has_borders_and_a_pad() {
         let level = Level::default();
         assert!(level.rects.iter().any(|r| r.kind == RectKind::Pad));
-        assert!(level.mask.is_solid(640, 710), "floor should be solid in mask");
-        assert!(level.mask.is_solid(640, 5), "ceiling should be solid in mask");
-        assert!(level.mask.is_solid(5, 360), "left border should be solid in mask");
+        assert!(
+            level.mask.is_solid(640, 710),
+            "floor should be solid in mask"
+        );
+        assert!(
+            level.mask.is_solid(640, 5),
+            "ceiling should be solid in mask"
+        );
+        assert!(
+            level.mask.is_solid(5, 360),
+            "left border should be solid in mask"
+        );
         assert!(
             level.mask.is_solid(level.size.x as i32 - 5, 360),
             "right border should be solid in mask"
@@ -1205,7 +1257,8 @@ mod tests {
         img.put_pixel(3, 0, Rgba([255, 0, 0, 0]));
 
         let mut buf = Vec::new();
-        img.write_to(&mut Cursor::new(&mut buf), image::ImageFormat::Png).unwrap();
+        img.write_to(&mut Cursor::new(&mut buf), image::ImageFormat::Png)
+            .unwrap();
 
         let mask = BitMask::from_png_bytes(&buf).unwrap();
         assert_eq!((mask.width, mask.height), (4, 1));
@@ -1289,11 +1342,7 @@ mod tests {
     #[test]
     fn tipped_ship_rests_flush_with_floor() {
         let tipped = UPRIGHT_ANGLE + TIP_FLAT_ANGLE;
-        let mut world = world_with_ship(
-            Vec2::new(640.0, 680.0),
-            Vec2::new(0.0, 5.0),
-            tipped,
-        );
+        let mut world = world_with_ship(Vec2::new(640.0, 680.0), Vec2::new(0.0, 5.0), tipped);
         world.ships[0].tipped_over = true;
         for _ in 0..200 {
             world.tick([Input::empty(), Input::empty()]);
@@ -1315,11 +1364,7 @@ mod tests {
     #[test]
     fn tipped_ship_does_not_drift_on_floor() {
         let off_flat = UPRIGHT_ANGLE + TIP_FLAT_ANGLE + 0.5;
-        let mut world = world_with_ship(
-            Vec2::new(640.0, 680.0),
-            Vec2::new(0.0, 5.0),
-            off_flat,
-        );
+        let mut world = world_with_ship(Vec2::new(640.0, 680.0), Vec2::new(0.0, 5.0), off_flat);
         world.ships[0].tipped_over = true;
 
         for _ in 0..30 {
@@ -1336,10 +1381,7 @@ mod tests {
         }
         assert!(world.ships[0].alive, "ship died during measurement window");
         let drift = (world.ships[0].pos.x - settled_x).abs();
-        assert!(
-            drift < 4.0,
-            "tipped ship drifted {drift} px after settling"
-        );
+        assert!(drift < 4.0, "tipped ship drifted {drift} px after settling");
     }
 
     #[test]
@@ -1383,11 +1425,7 @@ mod tests {
     #[test]
     fn fatal_impact_kills_ship() {
         // 1500 px/s into the floor: damage = (1500 - 50) * 0.25 = 362.5, way past SHIELD_MAX.
-        let mut world = world_with_ship(
-            Vec2::new(300.0, 685.0),
-            Vec2::new(0.0, 1500.0),
-            0.0,
-        );
+        let mut world = world_with_ship(Vec2::new(300.0, 685.0), Vec2::new(0.0, 1500.0), 0.0);
         world.tick([Input::empty(), Input::empty()]);
         assert!(!world.ships[0].alive);
         assert_eq!(world.ships[0].shields, 0.0);
@@ -1397,11 +1435,7 @@ mod tests {
     fn tilted_touchdown_settles_toward_upright() {
         // Touch down with a slight clockwise tilt (within tolerance so we land).
         let tilted = -std::f32::consts::FRAC_PI_2 + 0.25;
-        let mut world = world_with_ship(
-            Vec2::new(240.0, 600.0),
-            Vec2::new(0.0, 30.0),
-            tilted,
-        );
+        let mut world = world_with_ship(Vec2::new(240.0, 600.0), Vec2::new(0.0, 30.0), tilted);
         // Drift down until landed.
         for _ in 0..30 {
             world.tick([Input::empty(), Input::empty()]);
@@ -1499,11 +1533,7 @@ mod tests {
         // Touchdown well past the upright basin → ship tips over instead of
         // settling, then chip damage drains shields to zero.
         let tilted = -std::f32::consts::FRAC_PI_2 + 1.2; // ~69° off upright
-        let mut world = world_with_ship(
-            Vec2::new(240.0, 600.0),
-            Vec2::new(0.0, 30.0),
-            tilted,
-        );
+        let mut world = world_with_ship(Vec2::new(240.0, 600.0), Vec2::new(0.0, 30.0), tilted);
         for _ in 0..30 {
             world.tick([Input::empty(), Input::empty()]);
             if world.ships[0].landed {
@@ -1525,7 +1555,10 @@ mod tests {
             }
         }
         assert!(tipped_seen, "ship should enter tipped state");
-        assert!(!world.ships[0].alive, "tipped ship should die from chip damage");
+        assert!(
+            !world.ships[0].alive,
+            "tipped ship should die from chip damage"
+        );
     }
 
     #[test]
@@ -1563,11 +1596,8 @@ mod tests {
     #[test]
     fn landed_ship_can_still_lift_off() {
         // First land soft and upright.
-        let mut world = world_with_ship(
-            Vec2::new(240.0, 600.0),
-            Vec2::new(0.0, 30.0),
-            UPRIGHT_ANGLE,
-        );
+        let mut world =
+            world_with_ship(Vec2::new(240.0, 600.0), Vec2::new(0.0, 30.0), UPRIGHT_ANGLE);
         for _ in 0..30 {
             world.tick([Input::empty(), Input::empty()]);
             if world.ships[0].landed {
@@ -1580,7 +1610,10 @@ mod tests {
         for _ in 0..60 {
             world.tick([Input::THRUST, Input::empty()]);
         }
-        assert!(!world.ships[0].landed, "thrust should lift ship off the pad");
+        assert!(
+            !world.ships[0].landed,
+            "thrust should lift ship off the pad"
+        );
         assert!(world.ships[0].vel.y < 0.0, "ship should be moving upward");
     }
 
@@ -1599,7 +1632,11 @@ mod tests {
         let ship = &world.ships[0];
         assert!(ship.landed);
         assert!(ship.fuel > 100.0, "fuel should regen, got {}", ship.fuel);
-        assert!(ship.shields > 20.0, "shields should regen, got {}", ship.shields);
+        assert!(
+            ship.shields > 20.0,
+            "shields should regen, got {}",
+            ship.shields
+        );
         assert!(ship.fuel <= FUEL_MAX);
         assert!(ship.shields <= SHIELD_MAX);
     }
@@ -1650,7 +1687,11 @@ mod tests {
         let ship = &world.ships[0];
         assert!(ship.landed);
         assert!(!ship.landed_on_pad);
-        assert!(ship.fuel <= 100.0, "fuel should not regen off-pad, got {}", ship.fuel);
+        assert!(
+            ship.fuel <= 100.0,
+            "fuel should not regen off-pad, got {}",
+            ship.fuel
+        );
         assert!(
             ship.shields <= 20.0,
             "shields should not regen off-pad, got {}",
@@ -1716,7 +1757,10 @@ mod tests {
                 break;
             }
         }
-        assert!(world.bullets.is_empty(), "bullet should be despawned by wall");
+        assert!(
+            world.bullets.is_empty(),
+            "bullet should be despawned by wall"
+        );
     }
 
     #[test]
@@ -1760,11 +1804,7 @@ mod tests {
         // Gentle floor-kill: shields nearly empty, low velocity. A 1500 px/s
         // slam would yank the explosion's base velocity straight into the
         // floor and wall-collision would eat every particle on tick 1.
-        let mut world = world_with_ship(
-            Vec2::new(300.0, 690.0),
-            Vec2::new(0.0, 100.0),
-            0.0,
-        );
+        let mut world = world_with_ship(Vec2::new(300.0, 690.0), Vec2::new(0.0, 100.0), 0.0);
         world.ships[0].shields = 0.5;
         world.tick([Input::empty(), Input::empty()]);
         assert!(!world.ships[0].alive);
@@ -1935,7 +1975,11 @@ mod tests {
             } else {
                 Input::empty()
             };
-            let p2 = if t < 60 { Input::ROTATE_RIGHT } else { Input::empty() };
+            let p2 = if t < 60 {
+                Input::ROTATE_RIGHT
+            } else {
+                Input::empty()
+            };
             [p1, p2]
         };
         let mk = || World::new(Level::default());
