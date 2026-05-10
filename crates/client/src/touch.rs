@@ -146,6 +146,19 @@ impl TouchInput {
                 continue;
             }
 
+            if t.phase == TouchPhase::Moved {
+                let in_left = self.left_ids.contains(&t.id);
+                let in_right = self.right_ids.contains(&t.id);
+                if in_left && l.rotate_right.contains(pos) {
+                    self.left_ids.retain(|&id| id != t.id);
+                    self.right_ids.push(t.id);
+                } else if in_right && l.rotate_left.contains(pos) {
+                    self.right_ids.retain(|&id| id != t.id);
+                    self.left_ids.push(t.id);
+                }
+                continue;
+            }
+
             if matches!(t.phase, TouchPhase::Ended | TouchPhase::Cancelled) {
                 self.left_ids.retain(|&id| id != t.id);
                 self.right_ids.retain(|&id| id != t.id);
