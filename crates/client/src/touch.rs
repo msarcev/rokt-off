@@ -7,6 +7,7 @@ use sim::Input;
 use crate::session::{InputSource, poll_keyboard};
 
 const BTN_R: f32 = 34.0;
+const THRUST_R: f32 = 50.0;
 const BTN_GAP: f32 = 10.0;
 const EDGE_MARGIN: f32 = 22.0;
 const BOTTOM_MARGIN: f32 = 28.0;
@@ -35,6 +36,7 @@ struct Layout {
 
 fn layout() -> Layout {
     let r = BTN_R;
+    let tr = THRUST_R;
     let gap = BTN_GAP;
     let edge = EDGE_MARGIN;
     let bottom = BOTTOM_MARGIN;
@@ -45,20 +47,20 @@ fn layout() -> Layout {
 
     let row_y = sh - bottom - r;
     Layout {
-        rotate_left: Zone {
-            center: vec2(edge + r, row_y),
-            radius: r,
+        thrust: Zone {
+            center: vec2(edge + tr, sh - bottom - tr),
+            radius: tr,
         },
         rotate_right: Zone {
-            center: vec2(edge + 3.0 * r + gap, row_y),
+            center: vec2(sw - edge - r, row_y),
             radius: r,
         },
-        thrust: Zone {
-            center: vec2(edge + 2.0 * r + gap * 0.5, row_y - 2.0 * r - gap),
+        rotate_left: Zone {
+            center: vec2(sw - edge - 3.0 * r - gap, row_y),
             radius: r,
         },
         fire: Zone {
-            center: vec2(sw - edge - r, row_y),
+            center: vec2(sw - edge - 2.0 * r - gap * 0.5, row_y - 2.0 * r - gap),
             radius: r,
         },
         pause: Zone {
