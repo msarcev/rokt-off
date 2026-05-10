@@ -1272,37 +1272,29 @@ var importObject = {
                 }
             };
 
-            canvas.addEventListener("touchstart", function (event) {
+            canvas.addEventListener("pointerdown", function (event) {
+                if (event.pointerType === "mouse") return;
                 event.preventDefault();
-
-                for (const touch of event.changedTouches) {
-                    let relative_position = mouse_relative_position(touch.clientX, touch.clientY);
-                    wasm_exports.touch(SAPP_EVENTTYPE_TOUCHES_BEGAN, touch.identifier, relative_position.x, relative_position.y);
-                }
+                let p = mouse_relative_position(event.clientX, event.clientY);
+                wasm_exports.touch(SAPP_EVENTTYPE_TOUCHES_BEGAN, event.pointerId, p.x, p.y);
             }, { passive: false });
-            canvas.addEventListener("touchend", function (event) {
+            canvas.addEventListener("pointermove", function (event) {
+                if (event.pointerType === "mouse") return;
                 event.preventDefault();
-
-                for (const touch of event.changedTouches) {
-                    let relative_position = mouse_relative_position(touch.clientX, touch.clientY);
-                    wasm_exports.touch(SAPP_EVENTTYPE_TOUCHES_ENDED, touch.identifier, relative_position.x, relative_position.y);
-                }
+                let p = mouse_relative_position(event.clientX, event.clientY);
+                wasm_exports.touch(SAPP_EVENTTYPE_TOUCHES_MOVED, event.pointerId, p.x, p.y);
             }, { passive: false });
-            canvas.addEventListener("touchcancel", function (event) {
+            canvas.addEventListener("pointerup", function (event) {
+                if (event.pointerType === "mouse") return;
                 event.preventDefault();
-
-                for (const touch of event.changedTouches) {
-                    let relative_position = mouse_relative_position(touch.clientX, touch.clientY);
-                    wasm_exports.touch(SAPP_EVENTTYPE_TOUCHES_CANCELED, touch.identifier, relative_position.x, relative_position.y);
-                }
+                let p = mouse_relative_position(event.clientX, event.clientY);
+                wasm_exports.touch(SAPP_EVENTTYPE_TOUCHES_ENDED, event.pointerId, p.x, p.y);
             }, { passive: false });
-            canvas.addEventListener("touchmove", function (event) {
+            canvas.addEventListener("pointercancel", function (event) {
+                if (event.pointerType === "mouse") return;
                 event.preventDefault();
-
-                for (const touch of event.changedTouches) {
-                    let relative_position = mouse_relative_position(touch.clientX, touch.clientY);
-                    wasm_exports.touch(SAPP_EVENTTYPE_TOUCHES_MOVED, touch.identifier, relative_position.x, relative_position.y);
-                }
+                let p = mouse_relative_position(event.clientX, event.clientY);
+                wasm_exports.touch(SAPP_EVENTTYPE_TOUCHES_CANCELED, event.pointerId, p.x, p.y);
             }, { passive: false });
 
             window.onresize = function () {
