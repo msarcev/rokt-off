@@ -15,9 +15,9 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use camera::FollowCamera;
-use session::{LobbyStatus, LocalSession, P2pRunner, Session, no_input};
 #[cfg(not(target_arch = "wasm32"))]
 use session::SyncTestRunner;
+use session::{LobbyStatus, LocalSession, P2pRunner, Session, no_input};
 use touch::TouchInput;
 
 const BASE_VIEW: f32 = 360.0;
@@ -70,8 +70,34 @@ extern "C" {
     #[wasm_bindgen::prelude::wasm_bindgen(js_name = "roktoff_get_room")]
     fn js_get_room() -> String;
 
+    #[wasm_bindgen::prelude::wasm_bindgen(js_name = "roktoff_join_show")]
+    fn js_join_show();
+
+    #[wasm_bindgen::prelude::wasm_bindgen(js_name = "roktoff_join_hide")]
+    fn js_join_hide();
+
+    #[wasm_bindgen::prelude::wasm_bindgen(js_name = "roktoff_join_buffer")]
+    fn js_join_buffer() -> String;
+
+    #[wasm_bindgen::prelude::wasm_bindgen(js_name = "roktoff_join_take_submit")]
+    fn js_join_take_submit() -> bool;
+
     #[wasm_bindgen::prelude::wasm_bindgen(js_namespace = console, js_name = error)]
     fn console_error(s: &str);
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn js_join_show() {}
+#[cfg(not(target_arch = "wasm32"))]
+fn js_join_hide() {}
+#[cfg(not(target_arch = "wasm32"))]
+#[allow(dead_code)]
+fn js_join_buffer() -> String {
+    String::new()
+}
+#[cfg(not(target_arch = "wasm32"))]
+fn js_join_take_submit() -> bool {
+    false
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -129,7 +155,9 @@ pub fn wasm_start() {
 
 enum AppState {
     Menu(menu::Menu),
-    JoinEntry { buffer: String },
+    JoinEntry {
+        buffer: String,
+    },
     Lobby {
         runner: Option<Box<P2pRunner>>,
         room: String,
@@ -190,21 +218,34 @@ pub async fn run() {
                         }
                     }
                     menu::MenuChoice::Host => start_lobby(Role::Host, make_room_code()),
-                    menu::MenuChoice::Join => AppState::JoinEntry { buffer: String::new() },
+                    menu::MenuChoice::Join => {
+                        js_join_show();
+                        AppState::JoinEntry {
+                            buffer: String::new(),
+                        }
+                    }
                 })
             }
             AppState::JoinEntry { buffer } => {
                 tick_join_entry(buffer);
                 draw_join_entry(buffer);
-                if is_key_pressed(KeyCode::Escape) {
+                let submitted = js_join_take_submit() || is_key_pressed(KeyCode::Enter);
+                if is_key_pressed(KeyCode::Escape) || back_tapped() {
+                    js_join_hide();
                     Some(AppState::Menu(menu::Menu::new()))
-                } else if is_key_pressed(KeyCode::Enter) && buffer.len() == ROOM_CODE_LEN {
+                } else if submitted && buffer.len() == ROOM_CODE_LEN {
+                    js_join_hide();
                     Some(start_lobby(Role::Join, buffer.clone()))
                 } else {
                     None
                 }
             }
-            AppState::Lobby { runner, room, role, touch } => {
+            AppState::Lobby {
+                runner,
+                room,
+                role,
+                touch,
+            } => {
                 let r = runner.as_mut().expect("lobby runner present");
                 r.poll();
                 let status = r.lobby_status();
@@ -236,7 +277,12 @@ pub async fn run() {
                     None
                 }
             }
-            AppState::Playing { mode, session, camera, touch } => {
+            AppState::Playing {
+                mode,
+                session,
+                camera,
+                touch,
+            } => {
                 if is_key_pressed(KeyCode::Escape) || touch.borrow_mut().take_menu_press() {
                     Some(AppState::Menu(menu::Menu::new()))
                 } else {
@@ -254,9 +300,7 @@ pub async fn run() {
                                 world,
                                 [touch::input_source(touch.clone()), no_input()],
                             )
-                            .with_recorder(Box::new(move |inputs| {
-                                r2.borrow_mut().record(inputs)
-                            })),
+                            .with_recorder(Box::new(move |inputs| r2.borrow_mut().record(inputs))),
                         );
                         *camera = make_camera(session.world(), *mode);
                     }
@@ -293,7 +337,10 @@ fn followed_pos(world: &World, mode: PlayMode) -> Vec2 {
 }
 
 fn level_size(world: &World) -> Vec2 {
-    vec2(world.level.mask.width as f32, world.level.mask.height as f32)
+    vec2(
+        world.level.mask.width as f32,
+        world.level.mask.height as f32,
+    )
 }
 
 fn hud_h_px(sh: f32) -> f32 {
@@ -346,9 +393,7 @@ fn start_lobby(role: Role, room: String) -> AppState {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn initial_state(
-    replay: &mut Option<std::rc::Rc<std::cell::RefCell<replay::Replay>>>,
-) -> AppState {
+fn initial_state(replay: &mut Option<std::rc::Rc<std::cell::RefCell<replay::Replay>>>) -> AppState {
     let args: Vec<String> = std::env::args().collect();
     let net_idx = args.iter().position(|a| a == "--net");
     let sync_test = net_idx.is_none() && args.iter().any(|a| a == "--sync-test");
@@ -381,10 +426,7 @@ fn initial_state(
         let world = World::with_seed(Level::cave_02(), r.borrow().seed);
         let recorded = r.borrow().recorded.clone();
         let touch = make_touch();
-        let mut local = LocalSession::new(
-            world,
-            [touch::input_source(touch.clone()), no_input()],
-        );
+        let mut local = LocalSession::new(world, [touch::input_source(touch.clone()), no_input()]);
         local.replay(&recorded);
         println!(
             "[replay] replayed {} ticks from {}",
@@ -396,7 +438,12 @@ fn initial_state(
         *replay = Some(r);
         let mode = PlayMode::Local;
         let camera = make_camera(local.world(), mode);
-        return AppState::Playing { mode, session: Box::new(local), camera, touch };
+        return AppState::Playing {
+            mode,
+            session: Box::new(local),
+            camera,
+            touch,
+        };
     }
     AppState::Menu(menu::Menu::new())
 }
@@ -409,6 +456,27 @@ fn initial_state() -> AppState {
     AppState::Menu(menu::Menu::new())
 }
 
+const BACK_R: f32 = 22.0;
+const BACK_MARGIN: f32 = 18.0;
+
+fn back_center() -> Vec2 {
+    vec2(BACK_MARGIN + BACK_R, BACK_MARGIN + BACK_R)
+}
+
+fn back_tapped() -> bool {
+    let bc = back_center();
+    let dpr = screen_dpi_scale();
+    touches().iter().any(|t| {
+        t.phase == TouchPhase::Started && (t.position / dpr - bc).length() <= BACK_R
+    })
+}
+
+#[cfg(target_arch = "wasm32")]
+fn tick_join_entry(buffer: &mut String) {
+    *buffer = js_join_buffer();
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 fn tick_join_entry(buffer: &mut String) {
     while let Some(c) = get_char_pressed() {
         if buffer.len() < ROOM_CODE_LEN && c.is_ascii_alphabetic() {
@@ -434,9 +502,37 @@ fn draw_join_entry(buffer: &str) {
     let sh = screen_height();
 
     draw_centered("JOIN A ROOM", sw, sh * 0.30, 56, PAPER);
-    let placeholder = format!("{}{}", buffer, "_".repeat(ROOM_CODE_LEN - buffer.len()));
-    draw_centered(&placeholder, sw, sh * 0.55, 96, PAPER);
-    draw_centered("Type a 5-letter code, ENTER to join, ESC to cancel", sw, sh * 0.75, 22, PAPER);
+
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let placeholder = format!("{}{}", buffer, "_".repeat(ROOM_CODE_LEN - buffer.len()));
+        draw_centered(&placeholder, sw, sh * 0.55, 96, PAPER);
+    }
+    #[cfg(target_arch = "wasm32")]
+    let _ = buffer;
+
+    let hint = if cfg!(target_arch = "wasm32") {
+        "Tap the box to type, then press Done"
+    } else {
+        "Type a 5-letter code, ENTER to join, ESC to cancel"
+    };
+    draw_centered(hint, sw, sh * 0.75, 22, PAPER);
+
+    let bc = back_center();
+    let ink = Color::new(238.0 / 255.0, 232.0 / 255.0, 213.0 / 255.0, 0.7);
+    let idle = Color::new(238.0 / 255.0, 232.0 / 255.0, 213.0 / 255.0, 0.18);
+    draw_circle(bc.x, bc.y, BACK_R, idle);
+    draw_circle_lines(bc.x, bc.y, BACK_R, 2.0, ink);
+    let arrow = "<";
+    let asize = BACK_R * 1.2;
+    let dim = measure_text(arrow, None, asize as u16, 1.0);
+    draw_text(
+        arrow,
+        bc.x - dim.width * 0.5,
+        bc.y + dim.height * 0.5,
+        asize,
+        ink,
+    );
 }
 
 fn draw_lobby(room: &str, role: Role, status: LobbyStatus) {
@@ -613,7 +709,14 @@ fn draw_hud(
 
     draw_rectangle(x, y, w, h, paper);
     draw_line(x, y, x + w, y, 1.5 * s, ink);
-    draw_line(x + 24.0 * s, y + 3.0 * s, x + w - 24.0 * s, y + 3.0 * s, 0.7 * s, ink_soft);
+    draw_line(
+        x + 24.0 * s,
+        y + 3.0 * s,
+        x + w - 24.0 * s,
+        y + 3.0 * s,
+        0.7 * s,
+        ink_soft,
+    );
 
     let pad_x = if portrait { 10.0 * s } else { 22.0 * s };
     let bar_h = 11.0 * s;
@@ -638,9 +741,35 @@ fn draw_hud(
             (bx - label_gap - label_w, bx)
         };
 
-        draw_text(&format!("P{}", idx + 1), label_x, label_y, label_size, SHIP_COLORS[idx]);
-        draw_pencil_bar(bar_x, bar_y_shield, bar_w, bar_h, ship.shields / SHIELD_MAX, shield_fill, ink, ink_soft, s);
-        draw_pencil_bar(bar_x, bar_y_fuel, bar_w, bar_h, ship.fuel / FUEL_MAX, fuel_fill, ink, ink_soft, s);
+        draw_text(
+            &format!("P{}", idx + 1),
+            label_x,
+            label_y,
+            label_size,
+            SHIP_COLORS[idx],
+        );
+        draw_pencil_bar(
+            bar_x,
+            bar_y_shield,
+            bar_w,
+            bar_h,
+            ship.shields / SHIELD_MAX,
+            shield_fill,
+            ink,
+            ink_soft,
+            s,
+        );
+        draw_pencil_bar(
+            bar_x,
+            bar_y_fuel,
+            bar_w,
+            bar_h,
+            ship.fuel / FUEL_MAX,
+            fuel_fill,
+            ink,
+            ink_soft,
+            s,
+        );
     }
 
     if !touch_active && !portrait {
@@ -653,7 +782,17 @@ fn draw_hud(
     }
 }
 
-fn draw_pencil_bar(x: f32, y: f32, w: f32, h: f32, frac: f32, fill: Color, ink: Color, ink_soft: Color, s: f32) {
+fn draw_pencil_bar(
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    frac: f32,
+    fill: Color,
+    ink: Color,
+    ink_soft: Color,
+    s: f32,
+) {
     let frac = frac.clamp(0.0, 1.0);
     draw_rectangle(x, y, w * frac, h, fill);
     draw_rectangle_lines(x, y, w, h, 1.5 * s, ink);

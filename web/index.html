@@ -31,6 +31,26 @@
         height: 100%;
         touch-action: none;
     }
+    #join-input {
+        position: absolute;
+        left: 50%;
+        top: 50%;
+        transform: translate(-50%, -50%);
+        background: #0c0e14;
+        color: #eee8d5;
+        border: 2px solid #eee8d5;
+        font-family: monospace;
+        font-size: 48px;
+        line-height: 1;
+        text-align: center;
+        text-transform: uppercase;
+        width: 280px;
+        padding: 12px 0;
+        outline: none;
+        letter-spacing: 8px;
+        z-index: 10;
+        caret-color: #eee8d5;
+    }
 </style>
 </head>
 <body>
@@ -50,6 +70,60 @@
     window.roktoff_get_room = function () {
         var m = location.search.match(/[?&]room=([A-Za-z]{1,8})/);
         return m ? m[1].toUpperCase() : "";
+    };
+
+    // Visible <input> overlay used during AppState::JoinEntry on web. Tapping
+    // it summons the iOS keyboard via a real user gesture; programmatic
+    // focus from inside the wasm RAF loop wouldn't satisfy the gesture
+    // requirement.
+    var joinInput = null;
+    var joinSubmitted = false;
+    window.roktoff_join_show = function () {
+        if (!joinInput) {
+            joinInput = document.createElement('input');
+            joinInput.id = 'join-input';
+            joinInput.type = 'text';
+            joinInput.maxLength = 5;
+            joinInput.autocapitalize = 'characters';
+            joinInput.autocomplete = 'off';
+            joinInput.spellcheck = false;
+            joinInput.inputMode = 'text';
+            joinInput.placeholder = '_____';
+            joinInput.addEventListener('input', function () {
+                joinInput.value = joinInput.value
+                    .toUpperCase()
+                    .replace(/[^A-Z]/g, '')
+                    .slice(0, 5);
+            });
+            joinInput.addEventListener('keydown', function (e) {
+                if (e.key === 'Enter') {
+                    joinSubmitted = true;
+                    joinInput.blur();
+                }
+            });
+            document.body.appendChild(joinInput);
+        }
+        joinInput.value = '';
+        joinSubmitted = false;
+        joinInput.style.display = '';
+    };
+    window.roktoff_join_hide = function () {
+        if (joinInput) {
+            joinInput.value = '';
+            joinInput.blur();
+            joinInput.style.display = 'none';
+        }
+        joinSubmitted = false;
+    };
+    window.roktoff_join_buffer = function () {
+        return joinInput ? joinInput.value : '';
+    };
+    window.roktoff_join_take_submit = function () {
+        if (joinSubmitted) {
+            joinSubmitted = false;
+            return true;
+        }
+        return false;
     };
 </script>
 <script src="./pkg/rokt_off_client.js"></script>
