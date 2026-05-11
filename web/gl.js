@@ -1278,24 +1278,28 @@ var importObject = {
                 try { canvas.setPointerCapture(event.pointerId); } catch (e) {}
                 let p = mouse_relative_position(event.clientX, event.clientY);
                 wasm_exports.touch(SAPP_EVENTTYPE_TOUCHES_BEGAN, event.pointerId, p.x, p.y);
+                if (event.isPrimary) wasm_exports.mouse_down(p.x, p.y, 0);
             }, { passive: false });
             canvas.addEventListener("pointermove", function (event) {
                 if (event.pointerType === "mouse") return;
                 event.preventDefault();
                 let p = mouse_relative_position(event.clientX, event.clientY);
                 wasm_exports.touch(SAPP_EVENTTYPE_TOUCHES_MOVED, event.pointerId, p.x, p.y);
+                if (event.isPrimary) wasm_exports.mouse_move(Math.floor(p.x), Math.floor(p.y));
             }, { passive: false });
             canvas.addEventListener("pointerup", function (event) {
                 if (event.pointerType === "mouse") return;
                 event.preventDefault();
                 let p = mouse_relative_position(event.clientX, event.clientY);
                 wasm_exports.touch(SAPP_EVENTTYPE_TOUCHES_ENDED, event.pointerId, p.x, p.y);
+                if (event.isPrimary) wasm_exports.mouse_up(p.x, p.y, 0);
             }, { passive: false });
             canvas.addEventListener("pointercancel", function (event) {
                 if (event.pointerType === "mouse") return;
                 event.preventDefault();
                 let p = mouse_relative_position(event.clientX, event.clientY);
                 wasm_exports.touch(SAPP_EVENTTYPE_TOUCHES_CANCELED, event.pointerId, p.x, p.y);
+                if (event.isPrimary) wasm_exports.mouse_up(p.x, p.y, 0);
             }, { passive: false });
             canvas.addEventListener("lostpointercapture", function (event) {
                 if (event.pointerType === "mouse") return;
