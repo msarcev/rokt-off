@@ -244,7 +244,8 @@ pub async fn run() {
                 let r = runner.as_mut().expect("lobby runner present");
                 r.poll();
                 let status = r.lobby_status();
-                draw_lobby(room, *role, status);
+                let err = r.last_error();
+                draw_lobby(room, *role, status, err.as_deref());
 
                 if is_key_pressed(KeyCode::Escape) || back_tapped() {
                     Some(AppState::Menu(menu::Menu::new()))
@@ -530,7 +531,7 @@ fn draw_join_entry(buffer: &str) {
     );
 }
 
-fn draw_lobby(room: &str, role: Role, status: LobbyStatus) {
+fn draw_lobby(room: &str, role: Role, status: LobbyStatus, error: Option<&str>) {
     clear_background(SCREEN_BG);
     let sw = screen_width();
     let sh = screen_height();
@@ -549,7 +550,7 @@ fn draw_lobby(room: &str, role: Role, status: LobbyStatus) {
         LobbyPhase::Ready => "Starting…",
         LobbyPhase::Failed => "Connection failed.",
     };
-    draw_centered(status_line, sw, sh * 0.66, 28, PAPER);
+    draw_centered(status_line, sw, sh * 0.64, 28, PAPER);
 
     let diag = format!(
         "signaling: {} ({})   peers: {}",
@@ -557,13 +558,18 @@ fn draw_lobby(room: &str, role: Role, status: LobbyStatus) {
         if status.signaling_open { "ok" } else { "…" },
         status.remote_peers,
     );
-    draw_centered(&diag, sw, sh * 0.74, 18, PAPER);
+    draw_centered(&diag, sw, sh * 0.71, 18, PAPER);
+
+    if let Some(e) = error {
+        let truncated = if e.len() > 90 { &e[..90] } else { e };
+        draw_centered(truncated, sw, sh * 0.77, 16, PAPER);
+    }
 
     let hint = match role {
         Role::Host => "R: new code   ESC / tap < : cancel",
         Role::Join => "R: retry      ESC / tap < : cancel",
     };
-    draw_centered(hint, sw, sh * 0.82, 18, PAPER);
+    draw_centered(hint, sw, sh * 0.85, 18, PAPER);
 
     draw_back_arrow();
 }

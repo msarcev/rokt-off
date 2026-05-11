@@ -1,6 +1,8 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use crate::net::LastError;
+
 use ggrs::{
     Config, GgrsRequest, P2PSession, PlayerType, SessionBuilder, SessionState, SyncTestSession,
 };
@@ -193,6 +195,7 @@ impl Session for SyncTestRunner {
 pub struct P2pRunner {
     socket: WebRtcSocket,
     failed: Arc<AtomicBool>,
+    last_error: LastError,
     signaling_open: bool,
     session: Option<P2PSession<GgrsConfig>>,
     world: World,
@@ -203,10 +206,11 @@ pub struct P2pRunner {
 
 impl P2pRunner {
     pub fn new(world: World, room_url: &str, local_source: InputSource) -> Self {
-        let (socket, failed) = crate::net::open(room_url);
+        let (socket, failed, last_error) = crate::net::open(room_url);
         Self {
             socket,
             failed,
+            last_error,
             signaling_open: false,
             session: None,
             world,
@@ -214,6 +218,10 @@ impl P2pRunner {
             local_handles: Vec::new(),
             local_source,
         }
+    }
+
+    pub fn last_error(&self) -> Option<String> {
+        self.last_error.lock().ok().and_then(|s| s.clone())
     }
 
     /// First local handle once the session is built — caller picks the ship
