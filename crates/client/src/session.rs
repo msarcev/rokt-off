@@ -10,11 +10,22 @@ use sim::{Input, World};
 
 use crate::net_input::NetInput;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LobbyPhase {
+    Connecting,
+    SignalingOpen,
+    PeerConnected,
+    Ready,
+    Failed,
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct LobbyStatus {
     pub remote_peers: usize,
     pub ready: bool,
     pub failed: bool,
+    pub signaling_open: bool,
+    pub phase: LobbyPhase,
 }
 
 /// A driver for the simulation. The main loop calls `advance` once per
@@ -182,6 +193,7 @@ impl Session for SyncTestRunner {
 pub struct P2pRunner {
     socket: WebRtcSocket,
     failed: Arc<AtomicBool>,
+    signaling_open: bool,
     session: Option<P2PSession<GgrsConfig>>,
     world: World,
     accumulator: f32,
@@ -195,6 +207,7 @@ impl P2pRunner {
         Self {
             socket,
             failed,
+            signaling_open: false,
             session: None,
             world,
             accumulator: 0.0,
@@ -210,10 +223,27 @@ impl P2pRunner {
     }
 
     pub fn lobby_status(&self) -> LobbyStatus {
+        let remote_peers = self.socket.connected_peers().count();
+        let ready = self.session.is_some();
+        let failed = self.failed.load(Ordering::Relaxed);
+        let signaling_open = self.signaling_open;
+        let phase = if failed {
+            LobbyPhase::Failed
+        } else if ready {
+            LobbyPhase::Ready
+        } else if remote_peers >= 1 {
+            LobbyPhase::PeerConnected
+        } else if signaling_open {
+            LobbyPhase::SignalingOpen
+        } else {
+            LobbyPhase::Connecting
+        };
         LobbyStatus {
-            remote_peers: self.socket.connected_peers().count(),
-            ready: self.session.is_some(),
-            failed: self.failed.load(Ordering::Relaxed),
+            remote_peers,
+            ready,
+            failed,
+            signaling_open,
+            phase,
         }
     }
 
@@ -227,7 +257,13 @@ impl P2pRunner {
         // `try_update_peers` (vs `update_peers`, which panics) lets us surface
         // a closed message-loop as a `failed` flag instead of a crash.
         let updates = match self.socket.try_update_peers() {
-            Ok(u) => u,
+            Ok(u) => {
+                if !self.signaling_open {
+                    println!("[net] signaling open");
+                    self.signaling_open = true;
+                }
+                u
+            }
             Err(e) => {
                 eprintln!("[net] socket closed during lobby: {e:?}");
                 self.failed.store(true, Ordering::Relaxed);

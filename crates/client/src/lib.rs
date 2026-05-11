@@ -17,7 +17,7 @@ use std::rc::Rc;
 use camera::FollowCamera;
 #[cfg(not(target_arch = "wasm32"))]
 use session::SyncTestRunner;
-use session::{LobbyStatus, LocalSession, P2pRunner, Session, no_input};
+use session::{LobbyPhase, LobbyStatus, LocalSession, P2pRunner, Session, no_input};
 use touch::TouchInput;
 
 const BASE_VIEW: f32 = 360.0;
@@ -246,7 +246,7 @@ pub async fn run() {
                 let status = r.lobby_status();
                 draw_lobby(room, *role, status);
 
-                if is_key_pressed(KeyCode::Escape) {
+                if is_key_pressed(KeyCode::Escape) || back_tapped() {
                     Some(AppState::Menu(menu::Menu::new()))
                 } else if is_key_pressed(KeyCode::R) && !status.ready {
                     let new_room = match role {
@@ -542,21 +542,55 @@ fn draw_lobby(room: &str, role: Role, status: LobbyStatus) {
     draw_centered(header, sw, sh * 0.25, 48, PAPER);
     draw_centered(room, sw, sh * 0.50, 128, PAPER);
 
-    let status_line = if status.failed {
-        "Connection failed."
-    } else if status.ready {
-        "Starting…"
-    } else if status.remote_peers >= 1 {
-        "Peer found — handshaking…"
-    } else {
-        "Waiting for opponent…"
+    let status_line = match status.phase {
+        LobbyPhase::Connecting => "Connecting to signaling…",
+        LobbyPhase::SignalingOpen => "Waiting for opponent…",
+        LobbyPhase::PeerConnected => "Peer found — starting match…",
+        LobbyPhase::Ready => "Starting…",
+        LobbyPhase::Failed => "Connection failed.",
     };
+    draw_centered(status_line, sw, sh * 0.66, 28, PAPER);
+
+    let diag = format!(
+        "signaling: {} ({})   peers: {}",
+        signaling_host(),
+        if status.signaling_open { "ok" } else { "…" },
+        status.remote_peers,
+    );
+    draw_centered(&diag, sw, sh * 0.74, 18, PAPER);
+
     let hint = match role {
-        Role::Host => "R: new code   ESC: cancel",
-        Role::Join => "R: retry   ESC: cancel",
+        Role::Host => "R: new code   ESC / tap < : cancel",
+        Role::Join => "R: retry      ESC / tap < : cancel",
     };
-    draw_centered(status_line, sw, sh * 0.68, 28, PAPER);
-    draw_centered(hint, sw, sh * 0.78, 20, PAPER);
+    draw_centered(hint, sw, sh * 0.82, 18, PAPER);
+
+    draw_back_arrow();
+}
+
+fn signaling_host() -> &'static str {
+    let s = SIGNALING_BASE;
+    s.strip_prefix("wss://")
+        .or_else(|| s.strip_prefix("ws://"))
+        .unwrap_or(s)
+}
+
+fn draw_back_arrow() {
+    let bc = back_center();
+    let ink = Color::new(238.0 / 255.0, 232.0 / 255.0, 213.0 / 255.0, 0.7);
+    let idle = Color::new(238.0 / 255.0, 232.0 / 255.0, 213.0 / 255.0, 0.18);
+    draw_circle(bc.x, bc.y, BACK_R, idle);
+    draw_circle_lines(bc.x, bc.y, BACK_R, 2.0, ink);
+    let arrow = "<";
+    let asize = BACK_R * 1.2;
+    let dim = measure_text(arrow, None, asize as u16, 1.0);
+    draw_text(
+        arrow,
+        bc.x - dim.width * 0.5,
+        bc.y + dim.height * 0.5,
+        asize,
+        ink,
+    );
 }
 
 fn draw_playing(world: &World, camera: &FollowCamera, touch: &TouchInput, show_mask: bool) {
