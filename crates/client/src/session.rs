@@ -273,7 +273,13 @@ impl P2pRunner {
                 u
             }
             Err(e) => {
-                eprintln!("[net] socket closed during lobby: {e:?}");
+                let msg = format!("try_update_peers: {e:?}");
+                println!("[net] {msg}");
+                if let Ok(mut slot) = self.last_error.lock() {
+                    if slot.is_none() {
+                        *slot = Some(msg);
+                    }
+                }
                 self.failed.store(true, Ordering::Relaxed);
                 return;
             }

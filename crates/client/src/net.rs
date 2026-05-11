@@ -54,8 +54,9 @@ fn spawn_message_loop(loop_fut: MessageLoopFuture, failed: Arc<AtomicBool>, last
         Runtime::new().expect("failed to build tokio runtime for matchbox message loop")
     });
     rt.spawn(async_compat::Compat::new(async move {
-        if let Err(e) = loop_fut.await {
-            record_loop_error(&failed, &last_error, format!("{e:?}"));
+        match loop_fut.await {
+            Ok(()) => record_loop_error(&failed, &last_error, "loop closed".to_string()),
+            Err(e) => record_loop_error(&failed, &last_error, format!("{e:?}")),
         }
     }));
 }
@@ -63,8 +64,9 @@ fn spawn_message_loop(loop_fut: MessageLoopFuture, failed: Arc<AtomicBool>, last
 #[cfg(target_arch = "wasm32")]
 fn spawn_message_loop(loop_fut: MessageLoopFuture, failed: Arc<AtomicBool>, last_error: LastError) {
     wasm_bindgen_futures::spawn_local(async move {
-        if let Err(e) = loop_fut.await {
-            record_loop_error(&failed, &last_error, format!("{e:?}"));
+        match loop_fut.await {
+            Ok(()) => record_loop_error(&failed, &last_error, "loop closed".to_string()),
+            Err(e) => record_loop_error(&failed, &last_error, format!("{e:?}")),
         }
     });
 }
