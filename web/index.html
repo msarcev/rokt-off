@@ -80,6 +80,51 @@
         return m ? m[1].toUpperCase() : "";
     };
 
+    // Wrap RTCPeerConnection so we can see what WebRTC is actually doing
+    // (matchbox doesn't surface ICE state). Ring buffer of recent events,
+    // readable from wasm via roktoff_rtc_log() for on-screen display.
+    (function () {
+        var ring = [];
+        var MAX = 12;
+        function log(line) {
+            ring.push(line);
+            if (ring.length > MAX) ring.shift();
+            console.log("[rtc]", line);
+        }
+        window.roktoff_rtc_log = function () {
+            return ring.join("\n");
+        };
+        var Native = window.RTCPeerConnection || window.webkitRTCPeerConnection;
+        if (!Native) return;
+        function Wrapped(config) {
+            var pc = new Native(config);
+            log("new");
+            pc.addEventListener("iceconnectionstatechange", function () {
+                log("ice-conn=" + pc.iceConnectionState);
+            });
+            pc.addEventListener("icegatheringstatechange", function () {
+                log("ice-gather=" + pc.iceGatheringState);
+            });
+            pc.addEventListener("connectionstatechange", function () {
+                log("conn=" + pc.connectionState);
+            });
+            pc.addEventListener("icecandidate", function (e) {
+                if (e.candidate) {
+                    var m = e.candidate.candidate.match(/typ (\w+)/);
+                    log("cand-" + (m ? m[1] : "?"));
+                } else {
+                    log("cand-end");
+                }
+            });
+            pc.addEventListener("icecandidateerror", function (e) {
+                log("cand-err " + e.errorCode);
+            });
+            return pc;
+        }
+        Wrapped.prototype = Native.prototype;
+        window.RTCPeerConnection = Wrapped;
+    })();
+
     // Visible <input> overlay used during AppState::JoinEntry on web. Tapping
     // it summons the iOS keyboard via a real user gesture; programmatic
     // focus from inside the wasm RAF loop wouldn't satisfy the gesture

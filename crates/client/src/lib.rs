@@ -82,6 +82,9 @@ extern "C" {
     #[wasm_bindgen::prelude::wasm_bindgen(js_name = "roktoff_join_take_submit")]
     fn js_join_take_submit() -> bool;
 
+    #[wasm_bindgen::prelude::wasm_bindgen(js_name = "roktoff_rtc_log")]
+    fn js_rtc_log() -> String;
+
     #[wasm_bindgen::prelude::wasm_bindgen(js_namespace = console, js_name = error)]
     fn console_error(s: &str);
 }
@@ -93,6 +96,10 @@ fn js_join_hide() {}
 #[cfg(not(target_arch = "wasm32"))]
 fn js_join_take_submit() -> bool {
     false
+}
+#[cfg(not(target_arch = "wasm32"))]
+fn js_rtc_log() -> String {
+    String::new()
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -565,11 +572,20 @@ fn draw_lobby(room: &str, role: Role, status: LobbyStatus, error: Option<&str>) 
         draw_centered(truncated, sw, sh * 0.77, 16, PAPER);
     }
 
+    let rtc = js_rtc_log();
+    if !rtc.is_empty() {
+        let mut y = sh * 0.83;
+        for line in rtc.lines() {
+            draw_centered(line, sw, y, 14, PAPER);
+            y += 16.0;
+        }
+    }
+
     let hint = match role {
         Role::Host => "R: new code   ESC / tap < : cancel",
         Role::Join => "R: retry      ESC / tap < : cancel",
     };
-    draw_centered(hint, sw, sh * 0.85, 18, PAPER);
+    draw_centered(hint, sw, sh * 0.96, 16, PAPER);
 
     draw_back_arrow();
 }
