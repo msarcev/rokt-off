@@ -1,20 +1,36 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use crate::net::LastError;
+
 use ggrs::{
     Config, GgrsRequest, P2PSession, PlayerType, SessionBuilder, SessionState, SyncTestSession,
 };
 use macroquad::prelude::{KeyCode, is_key_down};
+use macroquad::time::get_time;
 use matchbox_socket::{PeerId, PeerState, WebRtcSocket};
 use sim::{Input, World};
 
 use crate::net_input::NetInput;
+
+const LOBBY_TIMEOUT_S: f64 = 30.0;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LobbyPhase {
+    Connecting,
+    SignalingOpen,
+    PeerConnected,
+    Ready,
+    Failed,
+}
 
 #[derive(Clone, Copy, Debug)]
 pub struct LobbyStatus {
     pub remote_peers: usize,
     pub ready: bool,
     pub failed: bool,
+    pub signaling_open: bool,
+    pub phase: LobbyPhase,
 }
 
 /// A driver for the simulation. The main loop calls `advance` once per
@@ -182,25 +198,39 @@ impl Session for SyncTestRunner {
 pub struct P2pRunner {
     socket: WebRtcSocket,
     failed: Arc<AtomicBool>,
+    last_error: LastError,
+    signaling_open: bool,
     session: Option<P2PSession<GgrsConfig>>,
     world: World,
     accumulator: f32,
     local_handles: Vec<usize>,
     local_source: InputSource,
+    start_time: f64,
 }
 
 impl P2pRunner {
     pub fn new(world: World, room_url: &str, local_source: InputSource) -> Self {
-        let (socket, failed) = crate::net::open(room_url);
+        let (socket, failed, last_error) = crate::net::open(room_url);
         Self {
             socket,
             failed,
+            last_error,
+            signaling_open: false,
             session: None,
             world,
             accumulator: 0.0,
             local_handles: Vec::new(),
             local_source,
+            start_time: get_time(),
         }
+    }
+
+    pub fn last_error(&self) -> Option<String> {
+        self.last_error.lock().ok().and_then(|s| s.clone())
+    }
+
+    pub fn lobby_elapsed(&self) -> f64 {
+        get_time() - self.start_time
     }
 
     /// First local handle once the session is built — caller picks the ship
@@ -210,10 +240,27 @@ impl P2pRunner {
     }
 
     pub fn lobby_status(&self) -> LobbyStatus {
+        let remote_peers = self.socket.connected_peers().count();
+        let ready = self.session.is_some();
+        let failed = self.failed.load(Ordering::Relaxed);
+        let signaling_open = self.signaling_open;
+        let phase = if failed {
+            LobbyPhase::Failed
+        } else if ready {
+            LobbyPhase::Ready
+        } else if remote_peers >= 1 {
+            LobbyPhase::PeerConnected
+        } else if signaling_open {
+            LobbyPhase::SignalingOpen
+        } else {
+            LobbyPhase::Connecting
+        };
         LobbyStatus {
-            remote_peers: self.socket.connected_peers().count(),
-            ready: self.session.is_some(),
-            failed: self.failed.load(Ordering::Relaxed),
+            remote_peers,
+            ready,
+            failed,
+            signaling_open,
+            phase,
         }
     }
 
@@ -224,12 +271,36 @@ impl P2pRunner {
     }
 
     fn poll_lobby(&mut self) {
+        if self.failed.load(Ordering::Relaxed) {
+            return;
+        }
+        if self.lobby_elapsed() > LOBBY_TIMEOUT_S {
+            if let Ok(mut slot) = self.last_error.lock() {
+                if slot.is_none() {
+                    *slot = Some("timed out waiting for peer connection".to_string());
+                }
+            }
+            self.failed.store(true, Ordering::Relaxed);
+            return;
+        }
         // `try_update_peers` (vs `update_peers`, which panics) lets us surface
         // a closed message-loop as a `failed` flag instead of a crash.
         let updates = match self.socket.try_update_peers() {
-            Ok(u) => u,
+            Ok(u) => {
+                if !self.signaling_open {
+                    println!("[net] signaling open");
+                    self.signaling_open = true;
+                }
+                u
+            }
             Err(e) => {
-                eprintln!("[net] socket closed during lobby: {e:?}");
+                let msg = format!("try_update_peers: {e:?}");
+                println!("[net] {msg}");
+                if let Ok(mut slot) = self.last_error.lock() {
+                    if slot.is_none() {
+                        *slot = Some(msg);
+                    }
+                }
                 self.failed.store(true, Ordering::Relaxed);
                 return;
             }
