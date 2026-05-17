@@ -297,7 +297,7 @@ pub async fn run() {
                         && is_key_pressed(KeyCode::R)
                     {
                         r.borrow_mut().reset();
-                        let world = World::with_seed(Level::cave_02(), DEFAULT_SEED);
+                        let world = World::with_seed(Level::default(), DEFAULT_SEED);
                         let r2 = r.clone();
                         *session = Box::new(
                             LocalSession::new(
@@ -332,7 +332,7 @@ pub async fn run() {
 }
 
 fn fresh_world() -> World {
-    World::with_seed(Level::cave_02(), DEFAULT_SEED)
+    World::with_seed(Level::default(), DEFAULT_SEED)
 }
 
 fn followed_pos(world: &World, mode: PlayMode) -> Vec2 {
@@ -427,7 +427,7 @@ fn initial_state(replay: &mut Option<std::rc::Rc<std::cell::RefCell<replay::Repl
     }
     if replay_flag {
         let r = Rc::new(RefCell::new(replay::Replay::open()));
-        let world = World::with_seed(Level::cave_02(), r.borrow().seed);
+        let world = World::with_seed(Level::default(), r.borrow().seed);
         let recorded = r.borrow().recorded.clone();
         let touch = make_touch();
         let mut local = LocalSession::new(world, [touch::input_source(touch.clone()), no_input()]);
