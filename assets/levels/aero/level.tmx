@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<map version="1.10" tiledversion="1.12.1" orientation="orthogonal" renderorder="right-down" width="1280" height="720" tilewidth="1" tileheight="1" infinite="0" nextlayerid="4" nextobjectid="7">
+ <properties>
+  <property name="name" value="Aero"/>
+ </properties>
+ <imagelayer id="3" name="Image Layer 1" locked="1" opacity="0.44">
+  <image source="mask.png" width="1280" height="720"/>
+ </imagelayer>
+ <objectgroup id="2" name="Object Layer 1">
+  <object id="1" type="spawn" x="120.205" y="675.25">
+   <properties>
+    <property name="player" type="int" value="0"/>
+   </properties>
+   <point/>
+  </object>
+  <object id="2" type="spawn" x="1165.27" y="675.906">
+   <properties>
+    <property name="player" type="int" value="1"/>
+   </properties>
+   <point/>
+  </object>
+  <object id="3" type="pad" x="86.9768" y="683.496" width="63.4309" height="6.88229"/>
+  <object id="4" type="pad" x="584.599" y="593.431" width="110.382" height="7.25486"/>
+  <object id="5" type="pad" x="1134.7" y="683.848" width="64.0636" height="5.9787"/>
+ </objectgroup>
+</map>

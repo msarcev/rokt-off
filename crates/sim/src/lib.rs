@@ -368,6 +368,14 @@ impl core::fmt::Display for LevelLoadError {
 impl std::error::Error for LevelLoadError {}
 
 impl Level {
+    pub fn aero() -> Self {
+        Self::from_bytes(
+            include_bytes!("../../../assets/levels/aero/mask.png"),
+            include_bytes!("../../../assets/levels/aero/level.tmx"),
+        )
+        .expect("aero level must load")
+    }
+
     /// Build a Level from a mask PNG (alpha > 0 = solid) and a Tiled .tmx string.
     ///
     /// The mask PNG's dimensions are authoritative for the world size — the .tmx's

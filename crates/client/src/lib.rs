@@ -171,7 +171,15 @@ enum AppState {
         session: Box<dyn Session>,
         camera: FollowCamera,
         touch: Rc<RefCell<TouchInput>>,
+        level_art: Texture2D,
     },
+}
+
+fn load_aero_art() -> Texture2D {
+    let bytes = include_bytes!("../../../assets/levels/aero/art.png");
+    let tex = Texture2D::from_file_with_format(bytes, None);
+    tex.set_filter(FilterMode::Nearest);
+    tex
 }
 
 pub async fn run() {
@@ -217,6 +225,7 @@ pub async fn run() {
                             )),
                             camera,
                             touch,
+                            level_art: load_aero_art(),
                         }
                     }
                     menu::MenuChoice::Host => start_lobby(Role::Host, make_room_code()),
@@ -276,6 +285,7 @@ pub async fn run() {
                         session: taken,
                         camera,
                         touch: touch.clone(),
+                        level_art: load_aero_art(),
                     })
                 } else {
                     None
@@ -286,6 +296,7 @@ pub async fn run() {
                 session,
                 camera,
                 touch,
+                level_art,
             } => {
                 if is_key_pressed(KeyCode::Escape) || touch.borrow_mut().take_menu_press() {
                     Some(AppState::Menu(menu::Menu::new()))
@@ -297,7 +308,7 @@ pub async fn run() {
                         && is_key_pressed(KeyCode::R)
                     {
                         r.borrow_mut().reset();
-                        let world = World::with_seed(Level::default(), DEFAULT_SEED);
+                        let world = World::with_seed(Level::aero(), DEFAULT_SEED);
                         let r2 = r.clone();
                         *session = Box::new(
                             LocalSession::new(
@@ -317,7 +328,7 @@ pub async fn run() {
                     let aspect = screen_width() / play_h;
                     camera.view_size = view_size_for_aspect(aspect);
                     camera.update(followed_pos(world, *mode), level_size(world), dt);
-                    draw_playing(world, camera, &touch.borrow(), show_mask);
+                    draw_playing(world, camera, &touch.borrow(), level_art, show_mask);
                     None
                 }
             }
@@ -332,7 +343,7 @@ pub async fn run() {
 }
 
 fn fresh_world() -> World {
-    World::with_seed(Level::default(), DEFAULT_SEED)
+    World::with_seed(Level::aero(), DEFAULT_SEED)
 }
 
 fn followed_pos(world: &World, mode: PlayMode) -> Vec2 {
@@ -423,11 +434,12 @@ fn initial_state(replay: &mut Option<std::rc::Rc<std::cell::RefCell<replay::Repl
             session: Box::new(SyncTestRunner::new(world)),
             camera,
             touch,
+            level_art: load_aero_art(),
         };
     }
     if replay_flag {
         let r = Rc::new(RefCell::new(replay::Replay::open()));
-        let world = World::with_seed(Level::default(), r.borrow().seed);
+        let world = World::with_seed(Level::aero(), r.borrow().seed);
         let recorded = r.borrow().recorded.clone();
         let touch = make_touch();
         let mut local = LocalSession::new(world, [touch::input_source(touch.clone()), no_input()]);
@@ -447,6 +459,7 @@ fn initial_state(replay: &mut Option<std::rc::Rc<std::cell::RefCell<replay::Repl
             session: Box::new(local),
             camera,
             touch,
+            level_art: load_aero_art(),
         };
     }
     AppState::Menu(menu::Menu::new())
@@ -628,7 +641,13 @@ fn draw_back_arrow() {
     );
 }
 
-fn draw_playing(world: &World, camera: &FollowCamera, touch: &TouchInput, show_mask: bool) {
+fn draw_playing(
+    world: &World,
+    camera: &FollowCamera,
+    touch: &TouchInput,
+    level_art: &Texture2D,
+    show_mask: bool,
+) {
     let sw = screen_width();
     let sh = screen_height();
     let dpi = screen_dpi_scale();
@@ -649,8 +668,18 @@ fn draw_playing(world: &World, camera: &FollowCamera, touch: &TouchInput, show_m
     clear_background(BLACK);
     set_camera(&cam);
     clear_background(Color::from_rgba(12, 14, 20, 255));
+    let lvl_size = vec2(world.level.size.x, world.level.size.y);
+    draw_texture_ex(
+        level_art,
+        0.0,
+        0.0,
+        WHITE,
+        DrawTextureParams {
+            dest_size: Some(lvl_size),
+            ..Default::default()
+        },
+    );
     draw_level(&world.level);
-    draw_mask_walls(&world.level.mask);
     if show_mask {
         draw_mask_overlay(&world.level.mask);
     }
@@ -684,10 +713,6 @@ fn draw_level(level: &Level) {
         let size = r.max - r.min;
         draw_rectangle(r.min.x, r.min.y, size.x, size.y, color);
     }
-}
-
-fn draw_mask_walls(mask: &BitMask) {
-    draw_mask_runs(mask, Color::from_rgba(70, 70, 80, 255));
 }
 
 fn draw_mask_overlay(mask: &BitMask) {
