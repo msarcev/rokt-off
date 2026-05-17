@@ -337,32 +337,155 @@ impl Default for Level {
     }
 }
 
+#[derive(Debug)]
+pub enum LevelLoadError {
+    MaskDecode(image::ImageError),
+    TmxParse(String),
+    MissingObjectLayer,
+    MissingSpawn(i32),
+    SpawnOutOfBounds(i32),
+    BadPropertyType {
+        name: &'static str,
+        expected: &'static str,
+    },
+}
+
+impl core::fmt::Display for LevelLoadError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::MaskDecode(e) => write!(f, "mask PNG decode: {e}"),
+            Self::TmxParse(msg) => write!(f, "tmx parse: {msg}"),
+            Self::MissingObjectLayer => write!(f, "tmx has no object layer"),
+            Self::MissingSpawn(p) => write!(f, "tmx missing spawn for player {p}"),
+            Self::SpawnOutOfBounds(p) => write!(f, "spawn {p} outside mask bounds"),
+            Self::BadPropertyType { name, expected } => {
+                write!(f, "property `{name}` must be {expected}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for LevelLoadError {}
+
 impl Level {
-    pub fn cave_01() -> Self {
-        Self::from_cave_png(include_bytes!("../../../assets/levels/cave_01.png"))
-    }
+    /// Build a Level from a mask PNG (alpha > 0 = solid) and a Tiled .tmx string.
+    ///
+    /// The mask PNG's dimensions are authoritative for the world size — the .tmx's
+    /// own width/height are advisory. Objects in the .tmx (one object layer) describe:
+    ///   - class="spawn", point shape, custom property `player: int` (0 or 1)
+    ///   - class="pad",   rect shape  → landing pad
+    /// Map-level custom properties: `name: string`, `gravity: float`.
+    pub fn from_bytes(mask_png: &[u8], tmx: &[u8]) -> Result<Self, LevelLoadError> {
+        let mask = BitMask::from_png_bytes(mask_png).map_err(LevelLoadError::MaskDecode)?;
+        let size = Vec2::new(mask.width as f32, mask.height as f32);
 
-    pub fn cave_02() -> Self {
-        Self::from_cave_png(include_bytes!("../../../assets/levels/cave_02.png"))
-    }
+        let map = parse_tmx(tmx)?;
 
-    fn from_cave_png(bytes: &[u8]) -> Self {
-        let mut level = Self::default();
-        let cave = BitMask::from_png_bytes(bytes).expect("cave PNG must decode");
-        assert_eq!(
-            (cave.width, cave.height),
-            (level.mask.width, level.mask.height),
-            "cave PNG must match world size"
-        );
-        for y in 0..cave.height as i32 {
-            for x in 0..cave.width as i32 {
-                if cave.is_solid(x, y) {
-                    level.mask.set(x, y, true);
+        let mut gravity = DEFAULT_GRAVITY;
+        if let Some(v) = map.properties.get("gravity") {
+            match v {
+                &tiled::PropertyValue::FloatValue(f) => gravity = f,
+                &tiled::PropertyValue::IntValue(i) => gravity = i as f32,
+                _ => {
+                    return Err(LevelLoadError::BadPropertyType {
+                        name: "gravity",
+                        expected: "float",
+                    });
                 }
             }
         }
-        level
+
+        let mut spawns: [Option<Vec2>; 2] = [None, None];
+        let mut rects: Vec<Rect> = Vec::new();
+
+        let object_layer = map
+            .layers()
+            .find_map(|l| l.as_object_layer())
+            .ok_or(LevelLoadError::MissingObjectLayer)?;
+
+        for obj in object_layer.objects() {
+            match obj.user_type.as_str() {
+                "spawn" => {
+                    let player = match obj.properties.get("player") {
+                        Some(&tiled::PropertyValue::IntValue(i)) => i,
+                        _ => {
+                            return Err(LevelLoadError::BadPropertyType {
+                                name: "player",
+                                expected: "int",
+                            });
+                        }
+                    };
+                    if player != 0 && player != 1 {
+                        return Err(LevelLoadError::MissingSpawn(player));
+                    }
+                    spawns[player as usize] = Some(Vec2::new(obj.x, obj.y));
+                }
+                "pad" => {
+                    if let tiled::ObjectShape::Rect { width, height } = obj.shape {
+                        rects.push(Rect {
+                            min: Vec2::new(obj.x, obj.y),
+                            max: Vec2::new(obj.x + width, obj.y + height),
+                            kind: RectKind::Pad,
+                        });
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let spawn_points = [
+            spawns[0].ok_or(LevelLoadError::MissingSpawn(0))?,
+            spawns[1].ok_or(LevelLoadError::MissingSpawn(1))?,
+        ];
+        for (i, s) in spawn_points.iter().enumerate() {
+            if s.x < 0.0 || s.y < 0.0 || s.x >= size.x || s.y >= size.y {
+                return Err(LevelLoadError::SpawnOutOfBounds(i as i32));
+            }
+        }
+
+        Ok(Self {
+            size,
+            gravity,
+            spawn_points,
+            rects,
+            mask,
+        })
     }
+}
+
+/// Parse a .tmx byte slice into a `tiled::Map` via an in-memory ResourceReader.
+fn parse_tmx(tmx: &[u8]) -> Result<tiled::Map, LevelLoadError> {
+    use std::io::Cursor;
+    use std::path::{Path, PathBuf};
+
+    struct InMemReader {
+        path: PathBuf,
+        bytes: Vec<u8>,
+    }
+    impl tiled::ResourceReader for InMemReader {
+        type Resource = Cursor<Vec<u8>>;
+        type Error = std::io::Error;
+        fn read_from(&mut self, p: &Path) -> std::result::Result<Self::Resource, Self::Error> {
+            if p == self.path {
+                Ok(Cursor::new(self.bytes.clone()))
+            } else {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!("rokt-off in-mem reader: only `{}` is known", self.path.display()),
+                ))
+            }
+        }
+    }
+
+    let virtual_path = PathBuf::from("level.tmx");
+    let reader = InMemReader {
+        path: virtual_path.clone(),
+        bytes: tmx.to_vec(),
+    };
+    let mut loader = tiled::Loader::with_reader(reader);
+    loader
+        .load_tmx_map(&virtual_path)
+        .map_err(|e| LevelLoadError::TmxParse(e.to_string()))
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -1210,6 +1333,91 @@ mod tests {
         for _ in 0..1000 {
             assert_eq!(a.next_u64(), b.next_u64());
         }
+    }
+
+    fn tiny_mask_png(width: u32, height: u32) -> Vec<u8> {
+        use image::{ImageEncoder, codecs::png::PngEncoder};
+        let mut buf = vec![0u8; (width as usize) * (height as usize) * 4];
+        for y in 0..height {
+            for x in 0..width {
+                let i = ((y * width + x) * 4) as usize;
+                let solid = x == 0 || y == 0 || x == width - 1 || y == height - 1;
+                buf[i] = 60;
+                buf[i + 1] = 60;
+                buf[i + 2] = 80;
+                buf[i + 3] = if solid { 255 } else { 0 };
+            }
+        }
+        let mut out = Vec::new();
+        PngEncoder::new(&mut out)
+            .write_image(&buf, width, height, image::ExtendedColorType::Rgba8)
+            .unwrap();
+        out
+    }
+
+    const SAMPLE_TMX: &[u8] = br#"<?xml version="1.0" encoding="UTF-8"?>
+<map version="1.10" tiledversion="1.11.0" orientation="orthogonal" renderorder="right-down" width="40" height="30" tilewidth="1" tileheight="1" infinite="0" nextlayerid="2" nextobjectid="5">
+ <properties>
+  <property name="name" value="Sample"/>
+  <property name="gravity" type="float" value="42"/>
+ </properties>
+ <objectgroup id="1" name="objects">
+  <object id="1" class="spawn" x="5" y="10">
+   <properties><property name="player" type="int" value="0"/></properties>
+   <point/>
+  </object>
+  <object id="2" class="spawn" x="30" y="10">
+   <properties><property name="player" type="int" value="1"/></properties>
+   <point/>
+  </object>
+  <object id="3" class="pad" x="3" y="20" width="6" height="2"/>
+  <object id="4" class="pad" x="28" y="20" width="6" height="2"/>
+ </objectgroup>
+</map>
+"#;
+
+    #[test]
+    fn from_bytes_parses_spawns_pads_and_gravity() {
+        let mask = tiny_mask_png(40, 30);
+        let level = Level::from_bytes(&mask, SAMPLE_TMX).expect("level must load");
+
+        assert_eq!(level.size, Vec2::new(40.0, 30.0));
+        assert_eq!(level.gravity, 42.0);
+        assert_eq!(level.spawn_points[0], Vec2::new(5.0, 10.0));
+        assert_eq!(level.spawn_points[1], Vec2::new(30.0, 10.0));
+
+        let pads: Vec<&Rect> = level
+            .rects
+            .iter()
+            .filter(|r| r.kind == RectKind::Pad)
+            .collect();
+        assert_eq!(pads.len(), 2);
+        assert_eq!(pads[0].min, Vec2::new(3.0, 20.0));
+        assert_eq!(pads[0].max, Vec2::new(9.0, 22.0));
+        assert_eq!(pads[1].min, Vec2::new(28.0, 20.0));
+        assert_eq!(pads[1].max, Vec2::new(34.0, 22.0));
+
+        // Mask dims authoritative; border is solid, interior is not.
+        assert!(level.mask.is_solid(0, 0));
+        assert!(level.mask.is_solid(39, 29));
+        assert!(!level.mask.is_solid(20, 15));
+    }
+
+    #[test]
+    fn from_bytes_rejects_missing_spawn() {
+        let mask = tiny_mask_png(40, 30);
+        let tmx = br#"<?xml version="1.0" encoding="UTF-8"?>
+<map version="1.10" orientation="orthogonal" renderorder="right-down" width="40" height="30" tilewidth="1" tileheight="1" infinite="0" nextlayerid="2" nextobjectid="2">
+ <objectgroup id="1" name="objects">
+  <object id="1" class="spawn" x="5" y="10">
+   <properties><property name="player" type="int" value="0"/></properties>
+   <point/>
+  </object>
+ </objectgroup>
+</map>
+"#;
+        let err = Level::from_bytes(&mask, tmx).unwrap_err();
+        assert!(matches!(err, LevelLoadError::MissingSpawn(1)));
     }
 
     #[test]
