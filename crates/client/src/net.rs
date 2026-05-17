@@ -17,12 +17,9 @@ pub fn open(room_url: &str) -> (WebRtcSocket, Arc<AtomicBool>, LastError) {
         urls: vec![
             "stun:stun.l.google.com:19302".to_string(),
             "stun:stun1.l.google.com:19302".to_string(),
-            "turn:openrelay.metered.ca:80".to_string(),
-            "turn:openrelay.metered.ca:443".to_string(),
-            "turn:openrelay.metered.ca:443?transport=tcp".to_string(),
         ],
-        username: Some("openrelayproject".to_string()),
-        credential: Some("openrelayproject".to_string()),
+        username: None,
+        credential: None,
     };
 
     let (socket, loop_fut) = WebRtcSocketBuilder::new(room_url)
