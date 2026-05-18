@@ -711,11 +711,14 @@ impl World {
                 continue;
             }
             if ship.respawn_ticks == 0 {
+                ship.lives = ship.lives.saturating_sub(1);
                 ship.respawn_ticks = RESPAWN_TICKS;
             } else {
                 ship.respawn_ticks -= 1;
-                if ship.respawn_ticks == 0 {
+                if ship.respawn_ticks == 0 && ship.lives > 0 {
+                    let lives = ship.lives;
                     *ship = Ship::new(self.level.spawn_points[idx], -std::f32::consts::FRAC_PI_2);
+                    ship.lives = lives;
                 }
             }
         }
@@ -1378,6 +1381,52 @@ mod tests {
             assert!(ship.alive);
             assert!(!ship.landed);
         }
+    }
+
+    /// Force a ship dead this frame. Bypasses the damage paths so we can
+    /// test the respawn/lives bookkeeping in isolation.
+    fn kill_ship(ship: &mut Ship) {
+        ship.alive = false;
+        ship.shields = 0.0;
+        ship.respawn_ticks = 0;
+    }
+
+    #[test]
+    fn death_decrements_lives_once_per_cycle() {
+        let mut world = World::new(Level::default());
+        assert_eq!(world.ships[0].lives, STARTING_LIVES);
+        kill_ship(&mut world.ships[0]);
+
+        world.tick([Input::empty(), Input::empty()]);
+        assert_eq!(world.ships[0].lives, STARTING_LIVES - 1);
+        assert!(!world.ships[0].alive);
+        assert!(world.ships[0].respawn_ticks > 0);
+
+        for _ in 0..(RESPAWN_TICKS as usize + 1) {
+            world.tick([Input::empty(), Input::empty()]);
+        }
+        assert!(world.ships[0].alive, "ship should have respawned");
+        assert_eq!(world.ships[0].lives, STARTING_LIVES - 1);
+    }
+
+    #[test]
+    fn respawn_stops_when_lives_hit_zero() {
+        let mut world = World::new(Level::default());
+        for _ in 0..STARTING_LIVES {
+            kill_ship(&mut world.ships[0]);
+            for _ in 0..(RESPAWN_TICKS as usize + 2) {
+                world.tick([Input::empty(), Input::empty()]);
+            }
+        }
+        assert_eq!(world.ships[0].lives, 0);
+        assert!(!world.ships[0].alive, "out of lives, must stay dead");
+
+        let dead_pos = world.ships[0].pos;
+        for _ in 0..(RESPAWN_TICKS as usize * 2) {
+            world.tick([Input::empty(), Input::empty()]);
+        }
+        assert!(!world.ships[0].alive);
+        assert_eq!(world.ships[0].pos, dead_pos, "must not respawn");
     }
 
     #[test]
