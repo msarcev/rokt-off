@@ -9,7 +9,9 @@ pub mod touch;
 mod replay;
 
 use macroquad::prelude::*;
-use sim::{BitMask, DEFAULT_SEED, FUEL_MAX, Level, ParticleKind, RectKind, SHIELD_MAX, World};
+use sim::{
+    BitMask, DEFAULT_SEED, FUEL_MAX, Level, MatchState, ParticleKind, RectKind, SHIELD_MAX, World,
+};
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -303,9 +305,23 @@ pub async fn run() {
                 } else {
                     note_keyboard_input(touch);
 
+                    let r_pressed = is_key_pressed(KeyCode::R);
+                    let ended_local_rematch = r_pressed
+                        && session.world().match_state.is_ended()
+                        && matches!(mode, PlayMode::Local);
+                    if ended_local_rematch {
+                        let world = World::with_seed(Level::aero(), DEFAULT_SEED);
+                        *session = Box::new(LocalSession::new(
+                            world,
+                            [touch::input_source(touch.clone()), no_input()],
+                        ));
+                        *camera = make_camera(session.world(), *mode);
+                    }
+
                     #[cfg(not(target_arch = "wasm32"))]
                     if let Some(r) = &replay
-                        && is_key_pressed(KeyCode::R)
+                        && r_pressed
+                        && !ended_local_rematch
                     {
                         r.borrow_mut().reset();
                         let world = World::with_seed(Level::aero(), DEFAULT_SEED);
@@ -329,6 +345,9 @@ pub async fn run() {
                     camera.view_size = view_size_for_aspect(aspect);
                     camera.update(followed_pos(world, *mode), level_size(world), dt);
                     draw_playing(world, camera, &touch.borrow(), level_art, show_mask);
+                    if world.match_state.is_ended() {
+                        draw_game_over_overlay(world, *mode);
+                    }
                     None
                 }
             }
@@ -702,6 +721,47 @@ fn draw_playing(
         sh > sw,
     );
     touch.draw_overlay();
+}
+
+fn draw_game_over_overlay(world: &World, mode: PlayMode) {
+    let MatchState::Ended { winner, .. } = world.match_state else {
+        return;
+    };
+    set_default_camera();
+
+    let sw = screen_width();
+    let sh = screen_height();
+
+    let dim = Color::new(0.0, 0.0, 0.0, 0.55);
+    draw_rectangle(0.0, 0.0, sw, sh, dim);
+
+    let banner = if winner == usize::MAX {
+        ("DRAW", WHITE)
+    } else {
+        let label = if winner == 0 {
+            "PLAYER 1 WINS"
+        } else {
+            "PLAYER 2 WINS"
+        };
+        (label, SHIP_COLORS[winner])
+    };
+
+    let title_size = (sh * 0.08).clamp(28.0, 72.0);
+    let hint_size = (sh * 0.035).clamp(14.0, 26.0);
+
+    let title_dim = measure_text(banner.0, None, title_size as u16, 1.0);
+    let title_x = (sw - title_dim.width) * 0.5;
+    let title_y = sh * 0.45;
+    draw_text(banner.0, title_x, title_y, title_size, banner.1);
+
+    let hint = match mode {
+        PlayMode::Local => "R rematch    ESC menu",
+        PlayMode::Net { .. } => "ESC menu",
+    };
+    let hint_dim = measure_text(hint, None, hint_size as u16, 1.0);
+    let hint_x = (sw - hint_dim.width) * 0.5;
+    let hint_y = title_y + title_size;
+    draw_text(hint, hint_x, hint_y, hint_size, WHITE);
 }
 
 fn draw_level(level: &Level) {
