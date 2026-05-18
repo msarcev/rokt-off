@@ -811,7 +811,7 @@ fn draw_hud(
     let bar_h = 11.0 * s;
     let bar_gap = 7.0 * s;
     let label_size = 22.0 * s;
-    let label_w = 28.0 * s;
+    let label_w = 56.0 * s;
     let label_gap = if portrait { 6.0 * s } else { 12.0 * s };
 
     let half = w * 0.5;
@@ -831,7 +831,7 @@ fn draw_hud(
         };
 
         draw_text(
-            &format!("P{}", idx + 1),
+            &format!("P{} \u{00D7}{}", idx + 1, ship.lives),
             label_x,
             label_y,
             label_size,

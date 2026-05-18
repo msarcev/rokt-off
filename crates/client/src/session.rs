@@ -439,9 +439,13 @@ fn checksum_world(w: &World) -> u128 {
         s.shields.to_bits().hash(&mut h);
         s.alive.hash(&mut h);
         s.landed.hash(&mut h);
+        s.landed_on_pad.hash(&mut h);
         s.tipped_over.hash(&mut h);
+        s.tipped_ticks.hash(&mut h);
         s.fire_cooldown.to_bits().hash(&mut h);
         s.respawn_ticks.hash(&mut h);
+        s.settled_ticks.hash(&mut h);
+        s.lives.hash(&mut h);
     }
     w.bullets.len().hash(&mut h);
     for b in &w.bullets {

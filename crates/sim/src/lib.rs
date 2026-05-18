@@ -71,6 +71,7 @@ pub const MAX_BULLETS: usize = 64;
 pub const BULLET_DAMAGE: f32 = 20.0;
 
 pub const RESPAWN_TICKS: u32 = 60;
+pub const STARTING_LIVES: u32 = 4;
 
 pub const MAX_PARTICLES: usize = 512;
 pub const EXPLOSION_PARTICLE_COUNT: usize = 350;
@@ -121,6 +122,7 @@ pub struct Ship {
     pub fire_cooldown: f32,
     pub respawn_ticks: u32,
     pub settled_ticks: u32,
+    pub lives: u32,
 }
 
 impl Ship {
@@ -140,6 +142,7 @@ impl Ship {
             fire_cooldown: 0.0,
             respawn_ticks: 0,
             settled_ticks: 0,
+            lives: STARTING_LIVES,
         }
     }
 
