@@ -573,6 +573,19 @@ struct WallImpact {
     speed: f32,
 }
 
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum MatchState {
+    Playing,
+    /// `winner == usize::MAX` indicates a draw (simultaneous final deaths).
+    Ended { winner: usize, ended_at_tick: u64 },
+}
+
+impl MatchState {
+    pub fn is_ended(&self) -> bool {
+        matches!(self, MatchState::Ended { .. })
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct World {
     pub level: Level,
@@ -581,6 +594,7 @@ pub struct World {
     pub particles: Vec<Particle>,
     pub tick: u64,
     pub rng: Rng,
+    pub match_state: MatchState,
 }
 
 impl World {
@@ -600,11 +614,17 @@ impl World {
             particles: Vec::with_capacity(MAX_PARTICLES),
             tick: 0,
             rng: Rng::new(seed),
+            match_state: MatchState::Playing,
         }
     }
 
     /// Advance the world by one fixed-step tick. Pure function of (self, inputs).
     pub fn tick(&mut self, inputs: [Input; 2]) {
+        if self.match_state.is_ended() {
+            // Freeze the world but keep ticks monotonic so GGRS doesn't choke.
+            self.tick += 1;
+            return;
+        }
         let gravity = Vec2::new(0.0, self.level.gravity);
         let was_alive = [self.ships[0].alive, self.ships[1].alive];
         let mut wall_impact: [Option<WallImpact>; 2] = [None, None];
@@ -721,6 +741,23 @@ impl World {
                     ship.lives = lives;
                 }
             }
+        }
+
+        let out: [bool; 2] = [
+            self.ships[0].lives == 0 && !self.ships[0].alive,
+            self.ships[1].lives == 0 && !self.ships[1].alive,
+        ];
+        let winner = match out {
+            [true, false] => Some(1),
+            [false, true] => Some(0),
+            [true, true] => Some(usize::MAX),
+            _ => None,
+        };
+        if let Some(w) = winner {
+            self.match_state = MatchState::Ended {
+                winner: w,
+                ended_at_tick: self.tick,
+            };
         }
 
         // Advance particles under gravity, drop expired.
@@ -1407,6 +1444,75 @@ mod tests {
         }
         assert!(world.ships[0].alive, "ship should have respawned");
         assert_eq!(world.ships[0].lives, STARTING_LIVES - 1);
+    }
+
+    fn kill_until_out(world: &mut World, idx: usize) {
+        for _ in 0..STARTING_LIVES {
+            kill_ship(&mut world.ships[idx]);
+            for _ in 0..(RESPAWN_TICKS as usize + 2) {
+                world.tick([Input::empty(), Input::empty()]);
+            }
+        }
+    }
+
+    #[test]
+    fn match_ends_with_winner_when_one_player_out() {
+        let mut world = World::new(Level::default());
+        assert_eq!(world.match_state, MatchState::Playing);
+        kill_until_out(&mut world, 0);
+        match world.match_state {
+            MatchState::Ended { winner, .. } => assert_eq!(winner, 1),
+            _ => panic!("expected match to be Ended, got {:?}", world.match_state),
+        }
+    }
+
+    #[test]
+    fn simultaneous_final_deaths_record_draw() {
+        let mut world = World::new(Level::default());
+        // Burn three lives off each ship without triggering Ended.
+        for _ in 0..STARTING_LIVES - 1 {
+            kill_ship(&mut world.ships[0]);
+            kill_ship(&mut world.ships[1]);
+            for _ in 0..(RESPAWN_TICKS as usize + 2) {
+                world.tick([Input::empty(), Input::empty()]);
+            }
+        }
+        assert_eq!(world.ships[0].lives, 1);
+        assert_eq!(world.ships[1].lives, 1);
+
+        // Same tick: both die.
+        kill_ship(&mut world.ships[0]);
+        kill_ship(&mut world.ships[1]);
+        world.tick([Input::empty(), Input::empty()]);
+
+        match world.match_state {
+            MatchState::Ended { winner, .. } => assert_eq!(winner, usize::MAX),
+            _ => panic!("expected draw, got {:?}", world.match_state),
+        }
+    }
+
+    #[test]
+    fn tick_is_noop_during_match_end() {
+        let mut world = World::new(Level::default());
+        kill_until_out(&mut world, 0);
+        assert!(world.match_state.is_ended());
+        let snap_ships = world.ships.clone();
+        let snap_bullets = world.bullets.len();
+        let pre_tick = world.tick;
+
+        for _ in 0..30 {
+            world.tick([Input::THRUST, Input::FIRE]);
+        }
+
+        assert_eq!(world.tick, pre_tick + 30, "tick counter must still advance");
+        assert_eq!(world.bullets.len(), snap_bullets, "no new bullets");
+        for (a, b) in world.ships.iter().zip(snap_ships.iter()) {
+            assert_eq!(a.pos, b.pos);
+            assert_eq!(a.vel, b.vel);
+            assert_eq!(a.angle, b.angle);
+            assert_eq!(a.lives, b.lives);
+            assert_eq!(a.alive, b.alive);
+        }
     }
 
     #[test]

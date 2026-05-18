@@ -9,7 +9,7 @@ use ggrs::{
 use macroquad::prelude::{KeyCode, is_key_down};
 use macroquad::time::get_time;
 use matchbox_socket::{PeerId, PeerState, WebRtcSocket};
-use sim::{Input, World};
+use sim::{self, Input, World};
 
 use crate::net_input::NetInput;
 
@@ -428,6 +428,17 @@ fn checksum_world(w: &World) -> u128 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
     w.tick.hash(&mut h);
+    match w.match_state {
+        sim::MatchState::Playing => 0u8.hash(&mut h),
+        sim::MatchState::Ended {
+            winner,
+            ended_at_tick,
+        } => {
+            1u8.hash(&mut h);
+            winner.hash(&mut h);
+            ended_at_tick.hash(&mut h);
+        }
+    }
     for s in &w.ships {
         s.pos.x.to_bits().hash(&mut h);
         s.pos.y.to_bits().hash(&mut h);
