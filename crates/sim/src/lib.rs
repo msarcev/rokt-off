@@ -344,6 +344,9 @@ pub enum LevelLoadError {
     MissingObjectLayer,
     MissingSpawn(i32),
     SpawnOutOfBounds(i32),
+    SpawnInWall(i32),
+    SpawnInsidePad(i32),
+    PadOutOfBounds(usize),
     BadPropertyType {
         name: &'static str,
         expected: &'static str,
@@ -358,6 +361,9 @@ impl core::fmt::Display for LevelLoadError {
             Self::MissingObjectLayer => write!(f, "tmx has no object layer"),
             Self::MissingSpawn(p) => write!(f, "tmx missing spawn for player {p}"),
             Self::SpawnOutOfBounds(p) => write!(f, "spawn {p} outside mask bounds"),
+            Self::SpawnInWall(p) => write!(f, "spawn {p} sits inside a wall pixel"),
+            Self::SpawnInsidePad(p) => write!(f, "spawn {p} sits inside a landing pad"),
+            Self::PadOutOfBounds(i) => write!(f, "pad {i} extends outside mask bounds"),
             Self::BadPropertyType { name, expected } => {
                 write!(f, "property `{name}` must be {expected}")
             }
@@ -369,11 +375,48 @@ impl std::error::Error for LevelLoadError {}
 
 impl Level {
     pub fn aero() -> Self {
-        Self::from_bytes(
+        let level = Self::from_bytes(
             include_bytes!("../../../assets/levels/aero/mask.png"),
             include_bytes!("../../../assets/levels/aero/level.tmx"),
         )
-        .expect("aero level must load")
+        .expect("aero level must load");
+        level.validate().expect("aero level must validate");
+        level
+    }
+
+    /// Sanity-check spawns and pads against the mask. Catches authoring mistakes
+    /// (spawn buried in a wall, pad floating off-mask, pad center buried in solid)
+    /// at level-load time rather than producing a level you can't play.
+    ///
+    /// Kept separate from `from_bytes` so the parse layer can succeed on test
+    /// fixtures that aren't intended to be playable.
+    pub fn validate(&self) -> Result<(), LevelLoadError> {
+        let mw = self.mask.width as f32;
+        let mh = self.mask.height as f32;
+
+        for (i, s) in self.spawn_points.iter().enumerate() {
+            if self.mask.is_solid(s.x as i32, s.y as i32) {
+                return Err(LevelLoadError::SpawnInWall(i as i32));
+            }
+            for pad in self.rects.iter().filter(|r| r.kind == RectKind::Pad) {
+                if s.x >= pad.min.x && s.x < pad.max.x && s.y >= pad.min.y && s.y < pad.max.y {
+                    return Err(LevelLoadError::SpawnInsidePad(i as i32));
+                }
+            }
+        }
+
+        for (i, pad) in self
+            .rects
+            .iter()
+            .filter(|r| r.kind == RectKind::Pad)
+            .enumerate()
+        {
+            if pad.min.x < 0.0 || pad.min.y < 0.0 || pad.max.x > mw || pad.max.y > mh {
+                return Err(LevelLoadError::PadOutOfBounds(i));
+            }
+        }
+
+        Ok(())
     }
 
     /// Build a Level from a mask PNG (alpha > 0 = solid) and a Tiled .tmx string.
@@ -1426,6 +1469,43 @@ mod tests {
 "#;
         let err = Level::from_bytes(&mask, tmx).unwrap_err();
         assert!(matches!(err, LevelLoadError::MissingSpawn(1)));
+    }
+
+    #[test]
+    fn validate_passes_on_default_level() {
+        Level::default().validate().expect("default must validate");
+    }
+
+    #[test]
+    fn validate_passes_on_aero() {
+        Level::aero();
+    }
+
+    #[test]
+    fn validate_catches_spawn_in_wall() {
+        let mut level = Level::default();
+        level.spawn_points[0] = Vec2::new(5.0, 5.0); // inside ceiling wall (y=0..20)
+        let err = level.validate().unwrap_err();
+        assert!(matches!(err, LevelLoadError::SpawnInWall(0)));
+    }
+
+    #[test]
+    fn validate_catches_spawn_inside_pad() {
+        let mut level = Level::default();
+        // P1 pad spans (180..300, 620..640). Drop the spawn into it.
+        level.spawn_points[0] = Vec2::new(240.0, 630.0);
+        let err = level.validate().unwrap_err();
+        assert!(matches!(err, LevelLoadError::SpawnInsidePad(0)));
+    }
+
+    #[test]
+    fn validate_catches_pad_out_of_bounds() {
+        let mut level = Level::default();
+        // Shove P2 pad past the right edge of the mask (size.x = 1280).
+        level.rects[1].min = Vec2::new(1260.0, 620.0);
+        level.rects[1].max = Vec2::new(1300.0, 640.0);
+        let err = level.validate().unwrap_err();
+        assert!(matches!(err, LevelLoadError::PadOutOfBounds(1)));
     }
 
     #[test]
