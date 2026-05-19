@@ -350,6 +350,7 @@ pub enum LevelLoadError {
     SpawnInWall(i32),
     SpawnInsidePad(i32),
     PadOutOfBounds(usize),
+    PadOverlapsMask(usize),
     BadPropertyType {
         name: &'static str,
         expected: &'static str,
@@ -367,6 +368,10 @@ impl core::fmt::Display for LevelLoadError {
             Self::SpawnInWall(p) => write!(f, "spawn {p} sits inside a wall pixel"),
             Self::SpawnInsidePad(p) => write!(f, "spawn {p} sits inside a landing pad"),
             Self::PadOutOfBounds(i) => write!(f, "pad {i} extends outside mask bounds"),
+            Self::PadOverlapsMask(i) => write!(
+                f,
+                "pad {i} top row overlaps solid mask pixels (shift pad up so it sits above the painted surface)"
+            ),
             Self::BadPropertyType { name, expected } => {
                 write!(f, "property `{name}` must be {expected}")
             }
@@ -416,6 +421,17 @@ impl Level {
         {
             if pad.min.x < 0.0 || pad.min.y < 0.0 || pad.max.x > mw || pad.max.y > mh {
                 return Err(LevelLoadError::PadOutOfBounds(i));
+            }
+            // Pad's top row must sit in empty space, otherwise the mask resolver
+            // will fight the pad resolver after a ship's wing tip lands at pad_top
+            // and the ship bounces off instead of settling.
+            let top_y = pad.min.y as i32;
+            let x0 = pad.min.x as i32;
+            let x1 = pad.max.x as i32;
+            for x in x0..x1 {
+                if self.mask.is_solid(x, top_y) {
+                    return Err(LevelLoadError::PadOverlapsMask(i));
+                }
             }
         }
 
@@ -1654,6 +1670,17 @@ mod tests {
         level.spawn_points[0] = Vec2::new(240.0, 630.0);
         let err = level.validate().unwrap_err();
         assert!(matches!(err, LevelLoadError::SpawnInsidePad(0)));
+    }
+
+    #[test]
+    fn validate_catches_pad_overlapping_mask() {
+        let mut level = Level::default();
+        // Move P1 pad so its top row (y = pad.min.y) sits inside the floor wall
+        // (which spans y=700..720 in the default mask).
+        level.rects[0].min = Vec2::new(180.0, 705.0);
+        level.rects[0].max = Vec2::new(300.0, 718.0);
+        let err = level.validate().unwrap_err();
+        assert!(matches!(err, LevelLoadError::PadOverlapsMask(0)));
     }
 
     #[test]

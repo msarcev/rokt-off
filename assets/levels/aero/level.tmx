@@ -20,7 +20,7 @@
    <point/>
   </object>
   <object id="3" type="pad" x="173.9536" y="1366.992" width="126.8618" height="13.76458"/>
-  <object id="4" type="pad" x="1169.198" y="1186.862" width="220.764" height="14.50972"/>
+  <object id="4" type="pad" x="1169.198" y="1185.862" width="220.764" height="14.50972"/>
   <object id="5" type="pad" x="2269.4" y="1367.696" width="128.1272" height="11.9574"/>
  </objectgroup>
 </map>
