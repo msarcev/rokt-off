@@ -10,7 +10,7 @@ mod replay;
 
 use macroquad::prelude::*;
 use sim::{
-    BitMask, DEFAULT_SEED, FUEL_MAX, Level, MatchState, ParticleKind, RectKind, SHIELD_MAX, World,
+    BitMask, DEFAULT_SEED, FUEL_MAX, Level, MatchState, ParticleKind, SHIELD_MAX, World,
 };
 
 use std::cell::RefCell;
@@ -698,7 +698,6 @@ fn draw_playing(
             ..Default::default()
         },
     );
-    draw_level(&world.level);
     if show_mask {
         draw_mask_overlay(&world.level.mask);
     }
@@ -762,17 +761,6 @@ fn draw_game_over_overlay(world: &World, mode: PlayMode) {
     let hint_x = (sw - hint_dim.width) * 0.5;
     let hint_y = title_y + title_size;
     draw_text(hint, hint_x, hint_y, hint_size, WHITE);
-}
-
-fn draw_level(level: &Level) {
-    for r in &level.rects {
-        let color = match r.kind {
-            RectKind::Wall => Color::from_rgba(70, 70, 80, 255),
-            RectKind::Pad => Color::from_rgba(80, 200, 120, 255),
-        };
-        let size = r.max - r.min;
-        draw_rectangle(r.min.x, r.min.y, size.x, size.y, color);
-    }
 }
 
 fn draw_mask_overlay(mask: &BitMask) {
